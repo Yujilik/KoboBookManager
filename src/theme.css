@@ -1,0 +1,122 @@
+/* The light palette stays in style.css / collection.css. Dark uses Everforest.
+   Covers are artwork: their images and generated colour palettes stay intact. */
+:root {
+  color-scheme: light;
+  --safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+  --safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
+  --safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+}
+
+/* Safe space belongs outside the header's fixed height. Otherwise its bottom
+   border can cross the logo when Android draws behind the status bar. */
+.app-shell { padding: var(--safe-top) var(--safe-right) var(--safe-bottom) var(--safe-left); }
+.sidebar { top: var(--safe-top); bottom: var(--safe-bottom); left: var(--safe-left); }
+.modal-backdrop { padding-top: max(28px, var(--safe-top)); padding-bottom: max(28px, var(--safe-bottom)); }
+.modal { max-height: calc(100dvh - 56px - var(--safe-top) - var(--safe-bottom)); }
+.toast { top: calc(12px + var(--safe-top)); }
+.busy-status { bottom: calc(18px + var(--safe-bottom)); }
+@media (max-width: 800px) {
+  .topbar { padding-top: 0; border-bottom: 0; }
+}
+@media (max-width: 540px) {
+  .modal-backdrop { padding: var(--safe-top) var(--safe-right) 0 var(--safe-left); }
+  .modal { max-height: min(94dvh, calc(100dvh - var(--safe-top))); padding-bottom: calc(25px + var(--safe-bottom)); }
+  .modal.wide, .collection-modal {
+    min-height: calc(100dvh - var(--safe-top));
+    max-height: calc(100dvh - var(--safe-top));
+    padding-top: 20px;
+  }
+  .collection-modal { padding-bottom: calc(17px + var(--safe-bottom)); }
+  .collection-modal .editor-bottom { bottom: calc(-17px - var(--safe-bottom)); }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  color: #d3c6aa;
+  background: #2d353b;
+  --accent: #a7c080;
+  --muted: #b4b6a6;
+  --line: #475258;
+  --forest-base: #2d353b;
+  --forest-mantle: #272e33;
+  --forest-surface: #374145;
+  --forest-raised: #414b50;
+  --forest-text: #d3c6aa;
+  --forest-secondary: #b4b6a6;
+  --forest-green: #a7c080;
+  --forest-teal: #83c092;
+  --forest-red: #e67e80;
+  --forest-peach: #e69875;
+  --forest-yellow: #dbbc7f;
+}
+
+/* Group by purpose so every editor, sheet and control shares the palette. */
+[data-theme="dark"] :is(h1, .mobile-brand, .transfer-banner h2, .empty-library h2,
+  .modal-heading h2, .settings-section h3, .source-choice strong, .collection-item-title,
+  .shared-form>h3, .collection-modal .field input, .collection-modal .field textarea) { color: var(--forest-text); }
+[data-theme="dark"] :is(.brand-sub, .nav-label, .nav-item, .source-empty, .add-folder,
+  .local-note, .version, .breadcrumb, .private-label, .eyebrow, .subtitle,
+  .transfer-banner p, .tabs button, .editor-tabs button, .sort, .sort select,
+  .empty-library .eyebrow, .empty-library>p:not(.eyebrow), .supported, .page-footer,
+  .result-count, .result-count span, .book-card p, .series-label, .empty, .icon-button,
+  .modal-intro, .modal>p, .source-choice small, .settings-section p, .settings-section li,
+  .field, .field small, .export-options>p, .delivery-icon, .selection-toolbar,
+  .collection-intro, .rail-heading, .collection-number, .collection-item-title small,
+  .change-indicator, .book-navigation, .book-navigation>span>span, .save-state,
+  .shared-form>p:not(.eyebrow), .shared-check, .append-tags) { color: var(--forest-secondary); }
+[data-theme="dark"] .hint { color: var(--forest-secondary)!important; }
+[data-theme="dark"] :is(.text-button, .source-heading button, .source-choice,
+  .banner-icon, .grid-indicator, .settings-language-heading svg, .shared-toggle,
+  .shared-field.enabled .shared-check) { color: var(--forest-green); }
+[data-theme="dark"] .text-button:hover { color: var(--forest-teal); }
+[data-theme="dark"] .sidebar { background: var(--forest-mantle); border-color: var(--line); }
+[data-theme="dark"] .brand-mark { background: var(--forest-green); color: var(--forest-base); }
+[data-theme="dark"] :is(.nav-item.active, .nav-item:hover) { background: var(--forest-surface); color: var(--forest-green); }
+[data-theme="dark"] .primary { color: var(--forest-base); box-shadow: 0 3px 6px #00000018; }
+[data-theme="dark"] .primary:hover { background: #bad297; }
+[data-theme="dark"] :is(.secondary, .settings-gear) { background: var(--forest-surface); border-color: var(--line); color: var(--forest-green); }
+[data-theme="dark"] :is(.secondary:hover, .icon-button:hover, .source-choice:hover) { background: var(--forest-raised); }
+[data-theme="dark"] :is(.transfer-banner, .tiny-arrow, .grid-indicator, .info-note,
+  .selection-toolbar.has-selection, .collection-rail) { background: var(--forest-surface); }
+[data-theme="dark"] :is(.transfer-banner, .banner-icon, .grid-indicator, .private-label,
+  .local-note, .settings-section, .editor-tabs, .collection-rail, .reorder-controls,
+  .shared-toggle, .selection-toolbar.has-selection) { border-color: var(--line); }
+[data-theme="dark"] :is(.tabs .selected, .editor-tabs .selected) { color: var(--forest-green); border-color: var(--forest-green); }
+[data-theme="dark"] .tabs span { background: var(--forest-raised); color: var(--forest-text); }
+[data-theme="dark"] .search { background: var(--forest-mantle); border-color: var(--line); color: var(--forest-secondary); }
+[data-theme="dark"] :is(.search input, .search button) { color: var(--forest-text); }
+[data-theme="dark"] .search input::placeholder { color: var(--forest-secondary); }
+[data-theme="dark"] :is(.modal, .collection-modal .editor-bottom) { background: var(--forest-base); border-color: var(--line); }
+[data-theme="dark"] .modal-backdrop { background: #131b20b8; }
+[data-theme="dark"] .source-choice { background: var(--forest-surface); border-color: var(--line); }
+[data-theme="dark"] :is(.field input, .field textarea, .language-section .field select,
+  .shared-field>input, .shared-field>textarea) { background: var(--forest-mantle); color: var(--forest-text); border-color: var(--line); }
+[data-theme="dark"] :is(.field input, .field textarea)::placeholder { color: #9da9a0; }
+[data-theme="dark"] select option { background: var(--forest-mantle); color: var(--forest-text); }
+[data-theme="dark"] :is(input, textarea, select):focus { outline-color: var(--forest-teal); }
+[data-theme="dark"] :is(button, a):focus-visible { outline-color: var(--forest-yellow); }
+[data-theme="dark"] .search:focus-within { outline-color: var(--forest-teal); }
+[data-theme="dark"] :is(.danger, .field-error) { color: var(--forest-red); }
+[data-theme="dark"] .danger-bg { background: var(--forest-red); color: var(--forest-base); }
+[data-theme="dark"] .danger-bg:hover { background: #ef999b; }
+[data-theme="dark"] .delete-confirm { background: #413638; border-color: #9b6265; }
+[data-theme="dark"] .info-note { color: var(--forest-teal); }
+[data-theme="dark"] .delivery-url { background: var(--forest-mantle); color: var(--forest-teal); border-color: var(--line); }
+[data-theme="dark"] .delivery-code { background: #414038; color: var(--forest-yellow); border-color: #68634d; }
+[data-theme="dark"] .busy-status { background: var(--forest-green); color: var(--forest-base); }
+[data-theme="dark"] .toast { background: var(--forest-surface); color: var(--forest-text); border-color: var(--forest-green); }
+[data-theme="dark"] .toast.error { background: #413638; color: var(--forest-red); border-color: #9b6265; }
+[data-theme="dark"] .book-selection { background: #272e33dc; }
+[data-theme="dark"] .is-selected .book-selection { background: var(--forest-surface); }
+[data-theme="dark"] :is(.book-selection input, .shared-check input, .append-tags input) { accent-color: var(--forest-green); }
+[data-theme="dark"] .is-selected .book-cover { outline-color: var(--forest-green); }
+[data-theme="dark"] .collection-item:hover { background: var(--forest-raised); }
+[data-theme="dark"] .collection-item.current { background: var(--forest-mantle); border-color: var(--forest-green); }
+[data-theme="dark"] .mini-cover { background: var(--forest-raised); color: var(--forest-green); }
+[data-theme="dark"] .shared-toggle { background: var(--forest-mantle); }
+[data-theme="dark"] :is(.shared-toggle.active, .shared-toggle:hover) { background: var(--forest-raised); color: var(--forest-green); }
+[data-theme="dark"] .save-state.pending { color: var(--forest-peach); }
+[data-theme="dark"] :is(.status-dot, .save-state.pending .status-dot) { background: var(--forest-green); }
+[data-theme="dark"] .change-indicator.pending { background: var(--forest-peach); }
+[data-theme="dark"] :is(.shared-field>input:disabled, .shared-field>textarea:disabled) { background: var(--forest-surface); }

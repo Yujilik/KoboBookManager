@@ -1,0 +1,51 @@
+# Cópias de referências e ferramentas baixadas, mantidas apenas nesta máquina.
+/Downloads/
+/idea.md
+/docs/analise-inicial.md
+
+# Dependências, builds e dados locais do aplicativo.
+node_modules/
+dist/
+coverage/
+/artifacts/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+
+# Credentials, signing material and machine/editor configuration.
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
+key.properties
+keystore.properties
+local.properties
+google-services.json
+GoogleService-Info.plist
+.npmrc
+.netrc
+.vscode/
+.idea/
+
+# Personal books, library exports, captures and backups.
+*.epub
+*.kepub
+*.pdf
+*.mobi
+*.azw
+*.azw3
+*.apk
+*.aab
+*.apks
+*.zip
+*.hprof
+*.heapdump
+*.sqlite
+*.sqlite3
+*.db
+/captures/
+/backups/
