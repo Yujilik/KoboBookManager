@@ -93,9 +93,9 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
               {tab === 'organise' && <>{field('series', t('seriesName'))}{field('seriesIndex', t('seriesNumber'), '1')}<label className="field span-two">{t('tags')}<input value={active.tagsText} onChange={event => setDraft({ ...active, tagsText: event.target.value })}/><small>{t('tagsHint')}</small></label>{field('isbn', 'ISBN')}{field('published', t('published'), 'YYYY-MM-DD')}</>}
             </fieldset></form>}
             {tab === 'export' && <div className="export-options"><p>{t('exportHint')}</p>{dirty && <p className="info-note">{t('saveBeforeExport')}</p>}
+              <button className="source-choice" disabled={busy || dirty || !valid} onClick={() => onExport(drafts.map(materialise), !pdf, true)}><Send size={23}/><span><strong>{t(pdf ? 'sendKobo' : 'convertSend')}</strong><small>{t(!isAndroid ? 'androidOnly' : pdf ? 'readyKobo' : 'convertSendHint')}</small></span><ArrowRight size={17}/></button>
               {!pdf && <button className="source-choice" disabled={busy || dirty || !valid} onClick={() => onExport(drafts.map(materialise), true)}><ArrowDownToLine size={23}/><span><strong>{t(collection ? 'convertZip' : 'convertSave')}</strong><small>{t('readyKobo')}</small></span><ArrowRight size={17}/></button>}
               <button className="source-choice" disabled={busy || dirty || !valid} onClick={() => onExport(drafts.map(materialise), false)}><FolderOpen size={23}/><span><strong>{t(pdf ? 'exportPdf' : collection ? 'exportZip' : 'exportEpub')}</strong><small>{t('safeCopies')}</small></span><ArrowRight size={17}/></button>
-              <button className="source-choice" disabled={busy || dirty || !valid} onClick={() => onExport(drafts.map(materialise), !pdf, true)}><Send size={23}/><span><strong>{t('sendKobo')}</strong><small>{t(isAndroid ? 'readyKobo' : 'androidOnly')}</small></span><ArrowRight size={17}/></button>
             </div>}
           </div></div>
         </>}
