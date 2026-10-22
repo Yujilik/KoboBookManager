@@ -21,8 +21,6 @@ export const messages = {
   yourSeries: ['Your series.', 'Suas séries.', 'Ваши серии.', '나만의 시리즈.', '你的丛书。', 'Tus series.', 'あなたのシリーズ。'],
   subtitle: ['Get the details right. Take the story to your Kobo.', 'Acerte os detalhes. Leve a história para o Kobo.', 'Настройте детали. Отправьте историю на Kobo.', '세부 정보를 다듬고 Kobo로 보내세요.', '完善图书信息，将故事带到 Kobo。', 'Cuida los detalles. Lleva la historia a tu Kobo.', '情報を整えて、物語を Kobo へ。'],
   addBooks: ['Add books', 'Adicionar livros', 'Добавить книги', '책 추가', '添加图书', 'Añadir libros', '本を追加'],
-  bannerTitle: ['From your phone to the next page.', 'Do celular para a próxima página.', 'С телефона — к следующей странице.', '휴대폰에서 다음 페이지로.', '从手机到下一页。', 'Del móvil a la siguiente página.', 'スマートフォンから、次のページへ。'],
-  bannerText: ['Edit a book or a whole collection. Convert and send over Wi-Fi.', 'Edite um livro ou a coleção inteira. Converta e envie pelo Wi-Fi.', 'Редактируйте книгу или всю серию. Конвертируйте и отправляйте по Wi-Fi.', '한 권부터 시리즈 전체까지 편집하고 변환해 Wi-Fi로 보내세요.', '编辑单本或整套图书，转换后通过 Wi-Fi 发送。', 'Edita un libro o una colección. Convierte y envía por Wi-Fi.', '1冊もシリーズ全体も編集。変換して Wi-Fi で送信。'],
   howItWorks: ['How it works', 'Como funciona', 'Как это работает', '사용 방법', '使用方法', 'Cómo funciona', '使い方'],
   allBooks: ['All books', 'Todos os livros', 'Все книги', '모든 책', '全部图书', 'Todos los libros', 'すべての本'],
   openFolder: ['Open folder', 'Abrir pasta', 'Открыть папку', '폴더 열기', '打开文件夹', 'Abrir carpeta', 'フォルダーを開く'],

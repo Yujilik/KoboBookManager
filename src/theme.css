@@ -52,12 +52,12 @@
 }
 
 /* Group by purpose so every editor, sheet and control shares the palette. */
-[data-theme="dark"] :is(h1, .mobile-brand, .transfer-banner h2, .empty-library h2,
+[data-theme="dark"] :is(h1, .mobile-brand, .empty-library h2,
   .modal-heading h2, .settings-section h3, .source-choice strong, .collection-item-title,
   .shared-form>h3, .collection-modal .field input, .collection-modal .field textarea) { color: var(--forest-text); }
 [data-theme="dark"] :is(.brand-sub, .nav-label, .nav-item, .source-empty, .add-folder,
   .local-note, .version, .breadcrumb, .private-label, .eyebrow, .subtitle,
-  .transfer-banner p, .tabs button, .editor-tabs button, .sort, .sort select,
+  .tabs button, .editor-tabs button, .sort, .sort select,
   .empty-library .eyebrow, .empty-library>p:not(.eyebrow), .supported, .page-footer,
   .result-count, .result-count span, .book-card p, .series-label, .empty, .icon-button,
   .modal-intro, .modal>p, .source-choice small, .settings-section p, .settings-section li,
@@ -67,7 +67,7 @@
   .shared-form>p:not(.eyebrow), .shared-check, .append-tags) { color: var(--forest-secondary); }
 [data-theme="dark"] .hint { color: var(--forest-secondary)!important; }
 [data-theme="dark"] :is(.text-button, .source-heading button, .source-choice,
-  .banner-icon, .grid-indicator, .settings-language-heading svg, .shared-toggle,
+  .grid-indicator, .settings-language-heading svg, .shared-toggle,
   .shared-field.enabled .shared-check) { color: var(--forest-green); }
 [data-theme="dark"] .text-button:hover { color: var(--forest-teal); }
 [data-theme="dark"] .sidebar { background: var(--forest-mantle); border-color: var(--line); }
@@ -77,9 +77,9 @@
 [data-theme="dark"] .primary:hover { background: #bad297; }
 [data-theme="dark"] :is(.secondary, .settings-gear) { background: var(--forest-surface); border-color: var(--line); color: var(--forest-green); }
 [data-theme="dark"] :is(.secondary:hover, .icon-button:hover, .source-choice:hover) { background: var(--forest-raised); }
-[data-theme="dark"] :is(.transfer-banner, .tiny-arrow, .grid-indicator, .info-note,
+[data-theme="dark"] :is(.grid-indicator, .info-note,
   .selection-toolbar.has-selection, .collection-rail) { background: var(--forest-surface); }
-[data-theme="dark"] :is(.transfer-banner, .banner-icon, .grid-indicator, .private-label,
+[data-theme="dark"] :is(.grid-indicator, .private-label,
   .local-note, .settings-section, .editor-tabs, .collection-rail, .reorder-controls,
   .shared-toggle, .selection-toolbar.has-selection) { border-color: var(--line); }
 [data-theme="dark"] :is(.tabs .selected, .editor-tabs .selected) { color: var(--forest-green); border-color: var(--forest-green); }
