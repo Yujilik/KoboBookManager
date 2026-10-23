@@ -19,7 +19,7 @@ export function translatedError(error: unknown, t: Translate): string {
   if (/backup|Backup/.test(message)) return t('backupInvalid');
   if (/título|titleRequired/.test(message)) return t('titleRequired');
   if (/capa|coverInvalid/.test(message)) return t('coverInvalid');
-  if (/XML|EPUB|epub|ZIP|Caminho/.test(message) && !/convert/.test(message)) return t('invalidBook');
+  if (/XML|EPUB|epub|ZIP|Caminho|invalidBook/.test(message) && !/convert/.test(message)) return t('invalidBook');
   if (/conver|minutos|converter/.test(message)) return t('conversionFailed');
   if (/pasta|folderFailed/.test(message)) return t('folderFailed');
   if (/salvar|saveFailed/.test(message)) return t('saveFailed');

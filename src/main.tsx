@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowDownToLine, ArrowRight, BookOpen, Check, CheckSquare, ChevronDown, FileArchive, FolderOpen, HardDrive, Layers, LayoutGrid, Library, LoaderCircle, Plus, RefreshCw, Search, Settings, Smartphone, X } from 'lucide-react';
-import type { Book, Metadata } from './types';
-import { emptyMetadata, MAX_BOOK_SIZE, readEpub } from './epub';
+import type { Book } from './types';
+import { MAX_BOOK_SIZE } from './epub';
+import { bookFormat, readBook } from './book-import';
 import * as store from './library';
 import { dataURL, fromBase64, isAndroid, native, type Delivery, type Folder } from './native';
 import { exportCollection, saveFile } from './export';
@@ -57,8 +58,6 @@ function App() {
   };
   async function importBytes(name: string, bytes: Uint8Array, source?: { uri: string; modified?: string; folder?: string }) {
     if (bytes.length > MAX_BOOK_SIZE) throw new Error('fileTooLarge');
-    const pdf = /\.pdf$/i.test(name);
-    if (pdf && new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') throw new Error('Invalid EPUB or PDF');
     const hash = await crypto.subtle.digest('SHA-256', bytes.slice().buffer);
     const id = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
     const existing = (await store.listBooks()).find(book => book.id === id);
@@ -66,11 +65,12 @@ function App() {
       if (source && !existing.sourceUri) await store.saveBook({ ...existing, sourceUri: source.uri, sourceModified: source.modified, sourceFolder: source.folder });
       return { id, added: false, format: existing.format };
     }
-    let metadata: Metadata = emptyMetadata(name.replace(/\.(kepub\.)?(epub|pdf)$/i, '')), cover: string | undefined;
-    if (!pdf) { const result = await readEpub(bytes); metadata = result.metadata; if (!metadata.title) metadata.title = name; if (result.cover) cover = dataURL(result.cover.bytes, result.cover.mime); }
+    const result = await readBook(name, bytes);
+    const { metadata, format } = result;
+    const cover = result.cover ? dataURL(result.cover.bytes, result.cover.mime) : undefined;
     const now = new Date().toISOString();
-    await store.saveBook({ ...metadata, id, filename: name, format: pdf ? 'pdf' : 'epub', size: bytes.length, added: now, updated: now, cover, sourceUri: source?.uri, sourceModified: source?.modified, sourceFolder: source?.folder }, bytes);
-    return { id, added: true, format: pdf ? 'pdf' : 'epub' };
+    await store.saveBook({ ...metadata, id, filename: name, format, size: bytes.length, added: now, updated: now, cover, sourceUri: source?.uri, sourceModified: source?.modified, sourceFolder: source?.folder }, bytes);
+    return { id, added: true, format };
   }
   const openCollection = (ids: string[], current: Book[]) => {
     const collator = new Intl.Collator(locale, { numeric: true, sensitivity: 'base' });
@@ -78,14 +78,15 @@ function App() {
     unique.sort((a, b) => collator.compare(current.find(book => book.id === a)!.filename, current.find(book => book.id === b)!.filename));
     if (unique.length) { setEditingIds(unique); setSelected(unique.length > 1 ? unique : []); }
   };
-  async function importFiles(input: FileList | null) {
+  async function importFiles(input: FileList | null, folder = false) {
     if (!input?.length) return;
-    const list = Array.from(input).filter(file => /\.(epub|pdf)$/i.test(file.name));
+    const list = Array.from(input);
     await run(t('importing'), async () => {
       let count = 0, existing = 0; const failures: string[] = [], ids: string[] = [];
       for (let index = 0; index < list.length; index++) {
         const file = list[index]; setBusy(t('reading', { index: index + 1, count: list.length, name: file.name }));
         try {
+          if (folder && !bookFormat(new Uint8Array(await file.slice(0, 5).arrayBuffer()))) continue;
           if (file.size > MAX_BOOK_SIZE) throw new Error('fileTooLarge');
           const result = await importBytes(file.name, new Uint8Array(await file.arrayBuffer()));
           if (result.added) count++; else existing++; ids.push(result.id);
@@ -169,8 +170,8 @@ function App() {
       </div>
     </main>
     {!settings && !sourcePicker && !editingIds?.length && !delivery && !busy && <BackToTop/>}
-    <input ref={files} hidden type="file" multiple accept=".epub,.pdf,application/epub+zip,application/pdf" onChange={event => { void importFiles(event.target.files); event.target.value = ''; }}/>
-    <input ref={directory} hidden type="file" multiple {...{ webkitdirectory: '' }} onChange={event => { void importFiles(event.target.files); event.target.value = ''; }}/>
+    <input ref={files} hidden type="file" multiple onChange={event => { void importFiles(event.target.files); event.target.value = ''; }}/>
+    <input ref={directory} hidden type="file" multiple {...{ webkitdirectory: '' }} onChange={event => { void importFiles(event.target.files, true); event.target.value = ''; }}/>
     <input ref={restoreInput} hidden type="file" accept=".zip" onChange={event => { const file = event.target.files?.[0]; if (file) void run(t('restoring'), async () => { const count = await store.restore(new Uint8Array(await file.arrayBuffer())); await refresh(); notify(t('restored', { count })); }); event.target.value = ''; }}/>
     {busy && <div className="busy-status" role="status"><LoaderCircle size={18} className="spin"/>{busy}</div>}
     {notice && <div className={'toast ' + (notice.error ? 'error' : '')} role={notice.error ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label={t('dismiss')} onClick={() => setNotice(undefined)}><X size={17}/></button></div>}

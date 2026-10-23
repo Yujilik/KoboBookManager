@@ -60,8 +60,16 @@ public class KoboNativePlugin extends Plugin {
             while (cursor.moveToNext()) {
                 String id = cursor.getString(0), name = cursor.getString(1), mime = cursor.getString(2);
                 if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) { scan(tree, id, files, depth + 1); continue; }
-                if (!name.toLowerCase(Locale.ROOT).matches(".*\\.(epub|pdf)$")) continue;
-                JSObject item = new JSObject(); item.put("uri", DocumentsContract.buildDocumentUriUsingTree(tree, id).toString()); item.put("name", name); item.put("size", cursor.getLong(3)); item.put("modified", cursor.getString(4)); files.put(item);
+                Uri document = DocumentsContract.buildDocumentUriUsingTree(tree, id);
+                if (name == null) name = "book";
+                if (!name.toLowerCase(Locale.ROOT).matches(".*\\.(epub|pdf)$") && !"application/epub+zip".equals(mime) && !"application/pdf".equals(mime)) {
+                    // Some providers return no extension and application/octet-stream.
+                    // Read only five bytes, then let the importer validate the whole file.
+                    try (InputStream input = getContext().getContentResolver().openInputStream(document)) {
+                        if (!BookContent.candidate(input)) continue;
+                    } catch (IOException | SecurityException ignored) { continue; }
+                }
+                JSObject item = new JSObject(); item.put("uri", document.toString()); item.put("name", name); item.put("size", cursor.getLong(3)); item.put("modified", cursor.getString(4)); files.put(item);
             }
         }
     }
