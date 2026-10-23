@@ -12,6 +12,7 @@ public class MainActivity extends BridgeActivity {
     @Override public void onCreate(android.os.Bundle savedInstanceState) {
         AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM);
         registerPlugin(KoboNativePlugin.class);
+        registerPlugin(AppUpdatesPlugin.class);
         super.onCreate(savedInstanceState);
         applySystemTheme();
     }

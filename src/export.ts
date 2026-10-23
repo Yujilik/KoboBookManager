@@ -17,7 +17,8 @@ export async function generate(book: Book, kepub: boolean, progress: (value: num
   const bytes = await original(book.id);
   if (book.format === 'pdf') return bytes;
   const edited = await editEpub(bytes, book, book.customCover ? { bytes: fromBase64(book.customCover), mime: book.customCover.slice(5, book.customCover.indexOf(';')) } : undefined);
-  return kepub ? convert(edited, progress) : edited;
+  const alreadyKepub = /\.kepub\.epub$/i.test(book.filename);
+  return kepub && !alreadyKepub ? convert(edited, progress) : edited;
 }
 export async function saveFile(bytes: Uint8Array, name: string, mime: string) {
   if (isAndroid) { await native.saveDocument({ name, mime, data: toBase64(bytes) }); return; }

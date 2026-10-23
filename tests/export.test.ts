@@ -61,6 +61,16 @@ describe('convert and send in one operation', () => {
     expect(native.startDelivery).not.toHaveBeenCalled();
   });
 
+  it('sends existing KEPUBs without reconverting and still applies metadata edits', async () => {
+    await send([{ ...book(), filename: 'original.kepub.epub' }]);
+    expect(convert).not.toHaveBeenCalled();
+    const saved = vi.mocked(Filesystem.writeFile).mock.calls[0][0];
+    expect((await readEpub(fromBase64(saved.data as string))).metadata.title).toBe('Edited title');
+    expect(native.startDelivery).toHaveBeenCalledWith(expect.objectContaining({
+      files: [expect.objectContaining({ name: 'Edited title.kepub.epub' })],
+    }));
+  });
+
   it('continues to send PDF bytes unchanged', async () => {
     const pdf = new TextEncoder().encode('%PDF-1.7 example');
     vi.mocked(original).mockResolvedValue(pdf);
