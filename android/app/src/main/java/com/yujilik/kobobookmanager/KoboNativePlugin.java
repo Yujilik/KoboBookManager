@@ -18,7 +18,7 @@ import java.util.*;
 @CapacitorPlugin(name = "KoboNative")
 public class KoboNativePlugin extends Plugin {
     private DeliveryServer delivery;
-    private static final long MAX_FILE = 64L * 1024 * 1024;
+    private static final long MAX_FILE = 192L * 1024 * 1024;
 
     @PluginMethod public void chooseFolder(PluginCall call) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
@@ -79,7 +79,7 @@ public class KoboNativePlugin extends Plugin {
             try (InputStream in = getContext().getContentResolver().openInputStream(Uri.parse(Objects.requireNonNull(call.getString("uri"))))) {
                 if (in == null) throw new IOException("Arquivo indisponível.");
                 ByteArrayOutputStream bytes = new ByteArrayOutputStream(); byte[] buffer = new byte[32768]; int n;
-                while ((n = in.read(buffer)) != -1) { if (bytes.size() + (long)n > MAX_FILE) throw new IOException("O limite por livro é 64 MB."); bytes.write(buffer, 0, n); }
+                while ((n = in.read(buffer)) != -1) { if (bytes.size() + (long)n > MAX_FILE) throw new IOException("fileTooLarge"); bytes.write(buffer, 0, n); }
                 JSObject answer = new JSObject(); answer.put("data", Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP)); call.resolve(answer);
             } catch (Exception e) { call.reject("Não foi possível abrir o livro: " + e.getMessage(), e); }
         });

@@ -1,6 +1,7 @@
 import { openDB, type DBSchema } from 'idb';
 import type { Book } from './types';
 import JSZip from 'jszip';
+import { MAX_BOOK_SIZE } from './epub';
 
 interface LibraryDB extends DBSchema {
   books: { key: string; value: Book };
@@ -54,7 +55,7 @@ export async function restore(bytes: Uint8Array) {
     if (!/^[a-f0-9]{64}$/.test(book.id) || typeof book.title !== 'string' || !Array.isArray(book.authors) || !Array.isArray(book.tags) || !['epub', 'pdf'].includes(book.format)) throw new Error('O backup contém dados inválidos.');
     const file = zip.file('originals/' + book.id); if (!file) throw new Error('O backup está incompleto. Nenhum livro foi restaurado.');
     const size = (file as unknown as { _data: { uncompressedSize: number } })._data.uncompressedSize;
-    total += size; if (size > 64 * 1024 * 1024 || total > 512 * 1024 * 1024) throw new Error('Backup grande demais para restaurar de uma vez nesta versão.');
+    total += size; if (size > MAX_BOOK_SIZE || total > 512 * 1024 * 1024) throw new Error('Backup grande demais para restaurar de uma vez nesta versão.');
     for (const key of ['cover', 'customCover'] as const) if (book[key] && !/^data:image\/(jpeg|png|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(book[key]!)) throw new Error('Capa inválida no backup.');
     originals.set(book.id, await file.async('uint8array'));
   }

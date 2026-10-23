@@ -3,8 +3,8 @@ import type { Cover, Metadata } from './types';
 
 const DC = 'http://purl.org/dc/elements/1.1/';
 const OPF = 'http://www.idpf.org/2007/opf';
-const MAX_EXPANDED = 256 * 1024 * 1024;
-export const MAX_BOOK_SIZE = 64 * 1024 * 1024;
+const MAX_EXPANDED = 768 * 1024 * 1024;
+export const MAX_BOOK_SIZE = 192 * 1024 * 1024;
 
 export function emptyMetadata(title = ''): Metadata {
   return { title, authors: [], language: '', publisher: '', description: '', tags: [], series: '', seriesIndex: '', isbn: '', published: '' };
@@ -40,14 +40,14 @@ function resolvePath(base: string, href: string): string {
   return parts.join('/');
 }
 async function open(bytes: Uint8Array) {
-  if (bytes.byteLength > MAX_BOOK_SIZE) throw new Error('O limite por livro nesta versão é 64 MB.');
+  if (bytes.byteLength > MAX_BOOK_SIZE) throw new Error('fileTooLarge');
   const zip = await JSZip.loadAsync(bytes);
   // Check sizes before decompressing content, including a highly compressed archive.
   let total = 0;
   for (const file of Object.values(zip.files)) {
     const entry = file as unknown as { _data?: { uncompressedSize?: number } };
     total += entry._data?.uncompressedSize ?? 0;
-    if (total > MAX_EXPANDED) throw new Error('EPUB muito grande após descompressão (limite: 256 MB).');
+    if (total > MAX_EXPANDED) throw new Error('EPUB muito grande após descompressão (limite: 768 MB).');
     if (/^\/|\\|(^|\/)\.\.(\/|$)/.test(file.unsafeOriginalName ?? file.name)) throw new Error('Caminho inseguro no EPUB.');
   }
   const containerFile = zip.file('META-INF/container.xml');
