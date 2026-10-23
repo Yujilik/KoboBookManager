@@ -55,3 +55,13 @@ it('shows connection failure and permits another manual check', async () => {
   expect(container.textContent).not.toContain('You have the latest version.');
   expect(button('Check for updates').disabled).toBe(false);
 });
+
+it('explains that a published release has no APK instead of reporting a connection failure', async () => {
+  await mount();
+  fetcher.mockResolvedValue(new Response(JSON.stringify({ ...data('0.2.6'), assets: [] })));
+  await act(async () => button('Check for updates').click());
+  expect(container.textContent).toContain('its Android APK is not available yet');
+  expect(container.textContent).not.toContain('Check your connection');
+  expect(updater.download).not.toHaveBeenCalled();
+  expect(button('Check for updates').disabled).toBe(false);
+});

@@ -48,11 +48,12 @@ export async function fetchUpdate(current: string, fetcher: typeof fetch = fetch
   try {
     const response = await fetcher(RELEASE_API, { headers: { Accept: 'application/vnd.github+json' }, signal: controller.signal, credentials: 'omit', cache: 'no-store' });
     if (response.status === 404) throw new Error('noRelease');
+    if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) throw new Error('updateRateLimited');
     if (!response.ok) throw new Error('updateCheckFailed');
     const release = await response.json();
     if (!release || typeof release.tag_name !== 'string' || !numbers(release.tag_name)) throw new Error('updateCheckFailed');
     const update = selectUpdate(release, current);
-    if (isNewerVersion(release.tag_name, current) && !update) throw new Error('updateCheckFailed');
+    if (isNewerVersion(release.tag_name, current) && !update) throw new Error('updateApkUnavailable');
     return update;
   } finally { clearTimeout(timeout); }
 }

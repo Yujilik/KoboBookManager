@@ -36,6 +36,10 @@ describe('manual GitHub updates', () => {
     fetcher.mockResolvedValue(new Response('', { status: 403 }));
     await expect(fetchUpdate('0.2.4', fetcher)).rejects.toThrow('updateCheckFailed');
     fetcher.mockResolvedValue(new Response(JSON.stringify({ ...release(), assets: [] })));
-    await expect(fetchUpdate('0.2.4', fetcher)).rejects.toThrow('updateCheckFailed');
+    await expect(fetchUpdate('0.2.4', fetcher)).rejects.toThrow('updateApkUnavailable');
+    fetcher.mockResolvedValue(new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }));
+    await expect(fetchUpdate('0.2.4', fetcher)).rejects.toThrow('updateRateLimited');
+    fetcher.mockResolvedValue(new Response('', { status: 429 }));
+    await expect(fetchUpdate('0.2.4', fetcher)).rejects.toThrow('updateRateLimited');
   });
 });

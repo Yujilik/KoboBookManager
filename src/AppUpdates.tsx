@@ -23,7 +23,8 @@ export function useAppUpdates() {
       setAvailable(next);
       setStatus(next ? undefined : 'appUpToDate');
     } catch (error) {
-      setStatus(error instanceof Error && error.message === 'noRelease' ? 'noRelease' : 'updateCheckFailed');
+      const message = error instanceof Error ? error.message : '';
+      setStatus(message === 'noRelease' || message === 'updateApkUnavailable' || message === 'updateRateLimited' ? message : 'updateCheckFailed');
     } finally { locked.current = false; setWorking(false); }
   };
   useEffect(() => {
