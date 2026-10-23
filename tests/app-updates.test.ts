@@ -9,7 +9,7 @@ import { updater } from '../src/updates';
 vi.mock('../src/native', () => ({ isAndroid: true }));
 vi.mock('../src/updates', async importOriginal => ({
   ...await importOriginal<typeof import('../src/updates')>(),
-  updater: { getVersion: vi.fn(), download: vi.fn(), install: vi.fn() },
+  updater: { getVersion: vi.fn(), openRelease: vi.fn() },
 }));
 let root: Root, container: HTMLDivElement;
 const fetcher = vi.fn<typeof fetch>();
@@ -19,7 +19,7 @@ const button = (text: string) => Array.from(container.querySelectorAll('button')
 beforeEach(() => {
   vi.resetAllMocks(); vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true); vi.stubGlobal('fetch', fetcher);
   vi.mocked(updater.getVersion).mockResolvedValue({ version: '0.2.4' });
-  vi.mocked(updater.download).mockResolvedValue(); vi.mocked(updater.install).mockResolvedValue();
+  vi.mocked(updater.openRelease).mockResolvedValue();
   container = document.createElement('div'); document.body.append(container); root = createRoot(container);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
@@ -31,21 +31,18 @@ it('makes no automatic request and only checks when the user presses Check for u
   await act(async () => button('Check for updates').click());
   expect(fetcher).toHaveBeenCalledTimes(1);
   expect(container.textContent).toContain('You have the latest version.');
-  expect(updater.download).not.toHaveBeenCalled();
+  expect(updater.openRelease).not.toHaveBeenCalled();
 });
 
-it('downloads on request, opens Android installation and retries a denied permission without downloading again', async () => {
+it('opens the exact release page on request without downloading or installing an APK', async () => {
   await mount(); fetcher.mockResolvedValue(new Response(JSON.stringify(data())));
   await act(async () => button('Check for updates').click());
   expect(container.textContent).toContain('Version 0.2.5 is available.');
-  expect(updater.download).not.toHaveBeenCalled();
-  vi.mocked(updater.install).mockRejectedValueOnce(new Error('installPermissionDenied'));
-  await act(async () => button('Download & install update').click());
-  expect(updater.download).toHaveBeenCalledTimes(1);
-  expect(container.textContent).toContain('Installation permission was not granted.');
-  await act(async () => button('Install downloaded update').click());
-  expect(updater.install).toHaveBeenCalledTimes(2);
-  expect(updater.download).toHaveBeenCalledTimes(1);
+  expect(updater.openRelease).not.toHaveBeenCalled();
+  await act(async () => button('Open release on GitHub').click());
+  expect(updater.openRelease).toHaveBeenCalledExactlyOnceWith({ url: 'https://github.com/Yujilik/KoboBookManager/releases/tag/0.2.5' });
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(container.textContent).not.toContain('Download & install');
 });
 
 it('shows connection failure and permits another manual check', async () => {
@@ -62,6 +59,17 @@ it('explains that a published release has no APK instead of reporting a connecti
   await act(async () => button('Check for updates').click());
   expect(container.textContent).toContain('its Android APK is not available yet');
   expect(container.textContent).not.toContain('Check your connection');
-  expect(updater.download).not.toHaveBeenCalled();
+  expect(updater.openRelease).not.toHaveBeenCalled();
   expect(button('Check for updates').disabled).toBe(false);
+});
+
+it('allows retrying if Android cannot open the release page', async () => {
+  await mount(); fetcher.mockResolvedValue(new Response(JSON.stringify(data())));
+  await act(async () => button('Check for updates').click());
+  vi.mocked(updater.openRelease).mockRejectedValueOnce(new Error('No browser'));
+  await act(async () => button('Open release on GitHub').click());
+  expect(container.textContent).toContain('Could not open the release page');
+  expect(button('Open release on GitHub').disabled).toBe(false);
+  await act(async () => button('Open release on GitHub').click());
+  expect(updater.openRelease).toHaveBeenCalledTimes(2);
 });

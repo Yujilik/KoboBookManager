@@ -12,20 +12,18 @@ describe('manual GitHub updates', () => {
     expect(isNewerVersion('1.0.0', '0.99.99')).toBe(true);
     for (const version of ['0.2.4', '0.2.3', '0.1.99', 'v0.2.5-beta', 'latest', '0.02.5', '9999999999999999999999.0.0']) expect(isNewerVersion(version, '0.2.4')).toBe(false);
   });
-  it('accepts both existing tag conventions and selects the versioned APK', () => {
-    for (const tag of ['v0.2.5', '0.2.5']) expect(selectUpdate(release(tag), '0.2.4')).toMatchObject({ version: '0.2.5', size: 7000000 });
+  it('accepts both existing tag conventions and links to the matching release page', () => {
+    for (const tag of ['v0.2.5', '0.2.5']) expect(selectUpdate(release(tag), '0.2.4')).toEqual({ version: '0.2.5', url: `https://github.com/Yujilik/KoboBookManager/releases/tag/${tag}` });
     expect(selectUpdate(release('0.2.4'), '0.2.4')).toBeUndefined();
     expect(selectUpdate({ ...release(), prerelease: true }, '0.2.4')).toBeUndefined();
     expect(selectUpdate({ ...release(), draft: true }, '0.2.4')).toBeUndefined();
   });
-  it('rejects foreign download URLs, mismatched names, oversized files and malformed digests', () => {
+  it('requires an uploaded versioned APK and constructs the page URL without trusting response links', () => {
     const valid = release();
     for (const patch of [
-      { browser_download_url: 'https://example.com/update.apk' },
-      { browser_download_url: valid.assets[0].browser_download_url.replace('Yujilik', 'someone') },
-      { browser_download_url: valid.assets[0].browser_download_url.replace('https:', 'http:') },
-      { name: 'KoboBookManager-0.2.6.apk' }, { size: 0 }, { size: 129 * 1024 * 1024 }, { digest: 'invalid' }, { state: 'new' },
+      { name: 'KoboBookManager-0.2.6.apk' }, { size: 0 }, { size: -1 }, { size: 1.5 }, { state: 'new' },
     ]) expect(selectUpdate({ ...valid, assets: [{ ...valid.assets[0], ...patch }] }, '0.2.4')).toBeUndefined();
+    expect(selectUpdate({ ...valid, html_url: 'https://example.com/fake', assets: [{ ...valid.assets[0], browser_download_url: 'https://example.com/fake' }] }, '0.2.4')?.url).toBe('https://github.com/Yujilik/KoboBookManager/releases/tag/v0.2.5');
   });
   it('checks the public endpoint without credentials and distinguishes network failure from no update', async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(release())));
