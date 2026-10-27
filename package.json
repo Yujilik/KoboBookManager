@@ -1,11 +1,11 @@
 {
   "name": "kobo-book-manager",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "node scripts/collect-licenses.mjs && tsc --noEmit && vite build",
+    "dev": "node scripts/prepare-pdf.mjs && vite --host 127.0.0.1",
+    "build": "node scripts/prepare-pdf.mjs && node scripts/collect-licenses.mjs && tsc --noEmit && vite build",
     "test": "vitest run",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android",
@@ -18,12 +18,16 @@
     "idb": "^8.0.4",
     "jszip": "^3.10.2",
     "lucide-react": "^1.60.0",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.4.299",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.3",
+    "@napi-rs/canvas": "^1.0.13",
     "@resvg/resvg-js": "2.6.2",
+    "@types/jsdom": "^30.0.0",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",

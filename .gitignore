@@ -6,6 +6,7 @@
 # Dependências, builds e dados locais do aplicativo.
 node_modules/
 dist/
+/public/vendor/pdfjs/
 coverage/
 /artifacts/
 .env
@@ -35,6 +36,7 @@ GoogleService-Info.plist
 *.epub
 *.kepub
 *.pdf
+!tests/fixtures/*.pdf
 *.mobi
 *.azw
 *.azw3

@@ -27,3 +27,5 @@ export interface Book extends Metadata {
 }
 
 export interface Cover { bytes: Uint8Array; mime: string }
+
+export type ExportFormat = 'original' | 'epub' | 'kepub';

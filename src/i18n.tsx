@@ -12,6 +12,9 @@ export function useI18n() { const value = useContext(Context); if (!value) throw
 
 export function translatedError(error: unknown, t: Translate): string {
   const message = error instanceof Error ? error.message : String((error as { message?: unknown })?.message ?? error);
+  if (message === 'pdfPasswordRequired') return t('pdfPasswordRequired');
+  if (message === 'pdfConversionTooLarge') return t('pdfConversionTooLarge');
+  if (message === 'pdfCoverFailed') return t('pdfCoverFailed');
   if (/fileTooLarge/.test(message)) return t('fileTooLarge');
   if (/collectionTooLarge/.test(message)) return t('collectionTooLarge');
   if (/cancelad|cancelled/.test(message)) return t('cancelled');

@@ -90,7 +90,7 @@
 [data-theme="dark"] :is(.modal, .collection-modal .editor-bottom) { background: var(--forest-base); border-color: var(--line); }
 [data-theme="dark"] .modal-backdrop { background: #131b20b8; }
 [data-theme="dark"] .source-choice { background: var(--forest-surface); border-color: var(--line); }
-[data-theme="dark"] :is(.field input, .field textarea, .language-section .field select,
+[data-theme="dark"] :is(.field input, .field textarea, .field select,
   .shared-field>input, .shared-field>textarea) { background: var(--forest-mantle); color: var(--forest-text); border-color: var(--line); }
 [data-theme="dark"] :is(.field input, .field textarea)::placeholder { color: #9da9a0; }
 [data-theme="dark"] select option { background: var(--forest-mantle); color: var(--forest-text); }

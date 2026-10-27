@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ArrowDownToLine, ArrowRight, BookOpen, Check, CheckSquare, ChevronDown, FileArchive, FolderOpen, HardDrive, Layers, LayoutGrid, Library, LoaderCircle, Plus, RefreshCw, Search, Settings, Smartphone, X } from 'lucide-react';
-import type { Book } from './types';
+import type { Book, ExportFormat } from './types';
 import { MAX_BOOK_SIZE } from './epub';
 import { bookFormat, readBook } from './book-import';
 import * as store from './library';
@@ -126,8 +126,8 @@ function App() {
     await store.saveBooks(next.map(book => ({ ...book, updated, edited: true })));
     await refresh(); notify(t('saved'));
   });
-  const exportBooks = (next: Book[], kepub: boolean, send = false) => void run(t('preparing'), async () => {
-    const result = await exportCollection(next, kepub, send, locale, t, setBusy);
+  const exportBooks = (next: Book[], format: ExportFormat, send = false) => void run(t('preparing'), async () => {
+    const result = await exportCollection(next, format, send, locale, t, setBusy);
     if (result) setDelivery(result); else notify(t('filesReady'));
   });
   const normalise = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase(locale);
