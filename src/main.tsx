@@ -6,7 +6,7 @@ import { MAX_BOOK_SIZE } from './epub';
 import { bookFormat, readBook } from './book-import';
 import * as store from './library';
 import { dataURL, fromBase64, isAndroid, native, type Delivery, type Folder } from './native';
-import { exportCollection, saveFile } from './export';
+import { exportCollection, saveFile, type ExportOptions } from './export';
 import { CollectionEditor } from './CollectionEditor';
 import { I18nProvider, translatedError, useI18n } from './i18n';
 import { locales, localeNames, type Locale } from './messages';
@@ -126,9 +126,13 @@ function App() {
     await store.saveBooks(next.map(book => ({ ...book, updated, edited: true })));
     await refresh(); notify(t('saved'));
   });
-  const exportBooks = (next: Book[], format: ExportFormat, send = false) => void run(t('preparing'), async () => {
-    const result = await exportCollection(next, format, send, locale, t, setBusy);
-    if (result) setDelivery(result); else notify(t('filesReady'));
+  const exportBooks = (next: Book[], format: ExportFormat, send = false, options?: ExportOptions) => void run(t('preparing'), async () => {
+    const keepAwake = isAndroid && format !== 'original' && next.some(book => book.format === 'pdf');
+    if (keepAwake) await native.setProcessing({ active: true });
+    try {
+      const result = await exportCollection(next, format, send, locale, t, setBusy, options);
+      if (result) setDelivery(result); else notify(t('filesReady'));
+    } finally { if (keepAwake) await native.setProcessing({ active: false }); }
   });
   const normalise = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase(locale);
   const filtered = books.filter(book => normalise([book.title, ...book.authors, ...book.tags, book.series, book.publisher].join(' ')).includes(normalise(search)) && (filter === 'all' || filter === book.format || filter === 'series' && !!book.series))

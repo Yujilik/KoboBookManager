@@ -18,6 +18,7 @@ import java.util.*;
 @CapacitorPlugin(name = "KoboNative")
 public class KoboNativePlugin extends Plugin {
     private DeliveryServer delivery;
+    private volatile boolean processing;
     private static final long MAX_FILE = 192L * 1024 * 1024;
 
     @PluginMethod public void chooseFolder(PluginCall call) {
@@ -181,11 +182,21 @@ public class KoboNativePlugin extends Plugin {
     }
 
     @PluginMethod public void stopDelivery(PluginCall call) { stop(); call.resolve(); }
+    @PluginMethod public void setProcessing(PluginCall call) {
+        processing = call.getBoolean("active", false);
+        updateKeepAwake(); call.resolve();
+    }
+    private void updateKeepAwake() {
+        if (getActivity() != null) getActivity().runOnUiThread(() -> {
+            if (processing || delivery != null) getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            else getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        });
+    }
     private void stop() {
         if (delivery != null) { delivery.close(); delivery = null; }
-        if (getActivity() != null) getActivity().runOnUiThread(() -> getActivity().getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
+        updateKeepAwake();
     }
     @Override protected void handleOnPause() { stop(); notifyListeners("deliveryStopped", new JSObject()); }
-    @Override protected void handleOnDestroy() { stop(); }
+    @Override protected void handleOnDestroy() { processing = false; stop(); }
 
 }

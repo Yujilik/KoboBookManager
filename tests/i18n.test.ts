@@ -35,4 +35,9 @@ describe('application languages', () => {
       expect(translatedError({ code: 'OUTPUT_INVALID' }, t)).toBe(t('outputInvalid'));
     }
   });
+  it('explains when a PDF needs text recognition instead of promising an image-only conversion', () => {
+    for (const locale of locales) for (const key of ['pdfTextUnavailable', 'pdfTextUnreliable', 'pdfOcrFailed'] as const) {
+      expect(translatedError(new Error(key), translator(locale))).toBe(translator(locale)(key));
+    }
+  });
 });

@@ -6,7 +6,7 @@ import { native, fromBase64 } from '../src/native';
 import { original } from '../src/library';
 import { convert } from '../src/converter';
 import { emptyMetadata, readEpub } from '../src/epub';
-import { exportCollection, filename } from '../src/export';
+import { exportCollection, filename, type ExportOptions } from '../src/export';
 import { pdfToEpub } from '../src/pdf';
 import { translator } from '../src/messages';
 import type { Book, ExportFormat } from '../src/types';
@@ -14,6 +14,7 @@ import { fixture } from './fixtures';
 import { pdfFixture } from './pdf-fixture';
 import { coverDataURL, coverFixture } from './cover-fixture';
 import { PDFDocument } from 'pdf-lib';
+import type { PdfConversionOptions } from '../src/pdf-ocr-options';
 
 vi.mock('@capacitor/filesystem', () => ({ Directory: { Cache: 'CACHE' }, Filesystem: { writeFile: vi.fn(), stat: vi.fn(), deleteFile: vi.fn() } }));
 vi.mock('../src/native', async importOriginal => ({
@@ -173,6 +174,65 @@ describe('convert and send in one operation', () => {
     const source = { ...book(), format: 'pdf' as const, filename: 'source.pdf', customCover: coverDataURL(cover) };
     await send([source], format);
     expect(pdfToEpub).toHaveBeenCalledWith(expect.any(Uint8Array), source, expect.any(Function), cover);
+  });
+
+  it.each(['epub', 'kepub'] as const)('forwards recognition languages to PDF-to-%s for saving and sending, with or without a custom cover', async format => {
+    const options: PdfConversionOptions = { ocrLanguages: ['eng', 'jpn', 'tha'] };
+    for (const delivery of [false, true]) for (const customCover of [undefined, coverDataURL()]) {
+      const source = { ...book(), format: 'pdf' as const, filename: 'source.pdf', customCover };
+      await exportCollection([source], format, delivery, 'en-GB', translator('en-GB'), vi.fn(), options);
+      expect(pdfToEpub).toHaveBeenLastCalledWith(expect.any(Uint8Array), source, expect.any(Function), customCover ? coverFixture() : undefined, options);
+    }
+  });
+
+  it.each(['epub', 'kepub'] as const)('reports text recognition distinctly while preserving the PDF-to-%s progress scale', async format => {
+    vi.mocked(pdfToEpub).mockImplementation(async (_bytes, _metadata, progress) => {
+      progress(40, 'ocr'); progress(100);
+      return extracted;
+    });
+    const status = vi.fn(), t = translator('en-GB');
+    await exportCollection([{ ...book(), format: 'pdf', filename: 'scan.pdf' }], format, false, 'en-GB', t, status, { ocrLanguages: ['eng'] });
+    expect(status).toHaveBeenCalledWith(t('recognizing', { index: 1, count: 1, progress: format === 'kepub' ? 28 : 40 }));
+    expect(status).toHaveBeenCalledWith(t('converting', { index: 1, count: 1, progress: format === 'kepub' ? 70 : 100 }));
+  });
+
+  it.each([false, true])('uses each PDF recognition languages in a mixed collection (send: %s)', async delivery => {
+    const japanese = { ...book('japanese'), format: 'pdf' as const, filename: 'japanese.pdf', language: 'ja' };
+    const thai = { ...book('thai'), format: 'pdf' as const, filename: 'thai.pdf', language: 'th' };
+    const options: ExportOptions = { ocrLanguages: ['eng'], pdfByBook: {
+      japanese: { ocrLanguages: ['eng', 'jpn'] }, thai: { ocrLanguages: ['tha'] },
+    } };
+    await exportCollection([book(), japanese, thai], 'kepub', delivery, 'en-GB', translator('en-GB'), vi.fn(), options);
+    expect(pdfToEpub).toHaveBeenCalledTimes(2);
+    expect(pdfToEpub).toHaveBeenNthCalledWith(1, expect.any(Uint8Array), japanese, expect.any(Function), undefined, options.pdfByBook!.japanese);
+    expect(pdfToEpub).toHaveBeenNthCalledWith(2, expect.any(Uint8Array), thai, expect.any(Function), undefined, options.pdfByBook!.thai);
+    expect(convert).toHaveBeenCalledTimes(3);
+  });
+
+  it('uses base options only for PDFs without their own override and does not pass the collection map to the PDF engine', async () => {
+    const first = { ...book('one'), format: 'pdf' as const, filename: 'one.pdf' };
+    const second = { ...book('two'), format: 'pdf' as const, filename: 'two.pdf' };
+    const options: ExportOptions = { ocrLanguages: ['eng'], pdfByBook: { two: { ocrLanguages: ['tha'] } } };
+    await exportCollection([first, second], 'epub', true, 'en-GB', translator('en-GB'), vi.fn(), options);
+    expect(pdfToEpub).toHaveBeenNthCalledWith(1, expect.any(Uint8Array), first, expect.any(Function), undefined, { ocrLanguages: ['eng'] });
+    expect(pdfToEpub).toHaveBeenNthCalledWith(2, expect.any(Uint8Array), second, expect.any(Function), undefined, { ocrLanguages: ['tha'] });
+  });
+
+  it('rejects an empty recognition selection on any converted PDF before reading or staging the collection', async () => {
+    const scan = { ...book('scan'), format: 'pdf' as const, filename: 'scan.pdf' };
+    const options: ExportOptions = { pdfByBook: { scan: { ocrLanguages: [] } } };
+    await expect(exportCollection([book(), scan], 'kepub', true, 'en-GB', translator('en-GB'), vi.fn(), options)).rejects.toThrow('pdfOcrFailed');
+    expect(original).not.toHaveBeenCalled();
+    expect(pdfToEpub).not.toHaveBeenCalled();
+    expect(Filesystem.writeFile).not.toHaveBeenCalled();
+    expect(native.startDelivery).not.toHaveBeenCalled();
+  });
+
+  it('does not run text recognition when original PDF output is selected', async () => {
+    const pdf = pdfFixture(); vi.mocked(original).mockResolvedValue(pdf);
+    await exportCollection([{ ...book(), format: 'pdf', filename: 'scan.pdf' }], 'original', false, 'en-GB', translator('en-GB'), vi.fn(), { ocrLanguages: ['eng'] });
+    expect(pdfToEpub).not.toHaveBeenCalled();
+    expect(convert).not.toHaveBeenCalled();
   });
 
   it.each(['original.epub', 'original.kepub.epub'])('embeds the chosen cover before sending %s to Kobo', async name => {

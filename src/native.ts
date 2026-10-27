@@ -13,6 +13,7 @@ interface KoboNative {
   saveDocument(options: StagedFile): Promise<OutputReceipt & { uri: string }>;
   startDelivery(options: { files: (StagedFile & { title: string })[]; locale: string; labels: Record<string, string> }): Promise<Delivery>;
   stopDelivery(): Promise<void>;
+  setProcessing(options: { active: boolean }): Promise<void>;
 }
 export const native = registerPlugin<KoboNative>('KoboNative');
 export const isAndroid = Capacitor.getPlatform() === 'android';

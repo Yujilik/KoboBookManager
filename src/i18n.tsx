@@ -15,6 +15,9 @@ export function translatedError(error: unknown, t: Translate): string {
   if (/outputInvalid|OUTPUT_INVALID/.test(message) || (error as { code?: unknown })?.code === 'OUTPUT_INVALID') return t('outputInvalid');
   if (message === 'pdfPasswordRequired') return t('pdfPasswordRequired');
   if (message === 'pdfConversionTooLarge') return t('pdfConversionTooLarge');
+  if (message === 'pdfTextUnavailable') return t('pdfTextUnavailable');
+  if (message === 'pdfTextUnreliable') return t('pdfTextUnreliable');
+  if (message === 'pdfOcrFailed') return t('pdfOcrFailed');
   if (message === 'pdfCoverFailed') return t('pdfCoverFailed');
   if (/fileTooLarge/.test(message)) return t('fileTooLarge');
   if (/collectionTooLarge/.test(message)) return t('collectionTooLarge');

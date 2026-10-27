@@ -6,13 +6,16 @@ import { useI18n } from './i18n';
 import { dataURL, isAndroid } from './native';
 import { coverMime, MAX_COVER_SIZE } from './cover';
 import { Modal } from './Modal';
+import { defaultOcrLanguages, ocrLanguageNames, PDF_OCR_LANGUAGES, type PdfOcrLanguage } from './pdf-ocr-options';
+import type { ExportOptions } from './export';
+const ocrLanguageTags: Record<PdfOcrLanguage, string> = { eng: 'en', jpn: 'ja', chi_sim: 'zh-CN', chi_tra: 'zh-TW', kor: 'ko', tha: 'th', rus: 'ru', por: 'pt', spa: 'es' };
 
 interface Props {
   books: Book[];
   busy: boolean;
   onClose: () => void;
   onSave: (books: Book[]) => Promise<boolean>;
-  onExport: (books: Book[], format: ExportFormat, send?: boolean) => void;
+  onExport: (books: Book[], format: ExportFormat, send?: boolean, options?: ExportOptions) => void;
   onRemove: (book: Book) => void;
 }
 export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRemove }: Props) {
@@ -25,6 +28,7 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
   const [confirm, setConfirm] = useState<'discard' | 'remove'>();
   const [error, setError] = useState('');
   const [pdfFormat, setPdfFormat] = useState<ExportFormat>('kepub');
+  const [ocrChoices, setOcrChoices] = useState<Record<string, PdfOcrLanguage[]>>({});
   const coverInput = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const index = drafts.findIndex(draft => draft.book.id === activeId);
@@ -34,6 +38,27 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
   const dirty = dirtyIds.size > 0;
   const valid = drafts.every(draft => draft.book.title.trim());
   const pdf = book.format === 'pdf';
+  const recognitionLanguages = (source: Book) => ocrChoices[source.id] ?? defaultOcrLanguages(source);
+  const ocrLanguages = recognitionLanguages(book);
+  const pdfBooks = drafts.map(draft => draft.book).filter(source => source.format === 'pdf');
+  const ocrReadyFor = (format: ExportFormat) => format === 'original' || pdfBooks.every(source => recognitionLanguages(source).length > 0);
+  const ocrReady = ocrReadyFor(pdf ? pdfFormat : 'kepub');
+  const chooseOcrLanguage = (language: PdfOcrLanguage, checked: boolean) => setOcrChoices(current => {
+    const selected = new Set(current[book.id] ?? defaultOcrLanguages(book));
+    if (checked) selected.add(language); else selected.delete(language);
+    return { ...current, [book.id]: PDF_OCR_LANGUAGES.filter(value => selected.has(value)) };
+  });
+  const exportBooks = (format: ExportFormat, send?: boolean) => {
+    const next = drafts.map(materialise);
+    if (pdfBooks.length && format !== 'original') {
+      if (!ocrReadyFor(format)) return;
+      const options: ExportOptions = collection
+        ? { pdfByBook: Object.fromEntries(pdfBooks.map(source => [source.id, { ocrLanguages: [...recognitionLanguages(source)] }])) }
+        : { ocrLanguages: [...ocrLanguages] };
+      onExport(next, format, !!send, options);
+    } else if (send === undefined) onExport(next, format);
+    else onExport(next, format, send);
+  };
   const setDraft = (next: Draft) => setDrafts(current => current.map(draft => draft.book.id === activeId ? next : draft));
   const update = (key: keyof Metadata, value: string) => setDraft({ ...active, book: { ...book, [key]: value } });
   const requestClose = () => { if (busy) return; if (dirty) setConfirm('discard'); else onClose(); };
@@ -96,10 +121,11 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
               {tab === 'organise' && <>{field('series', t('seriesName'))}{field('seriesIndex', t('seriesNumber'), '1')}<label className="field span-two">{t('tags')}<input value={active.tagsText} onChange={event => setDraft({ ...active, tagsText: event.target.value })}/><small>{t('tagsHint')}</small></label>{field('isbn', 'ISBN')}{field('published', t('published'), 'YYYY-MM-DD')}</>}
             </fieldset></form>}
             {tab === 'export' && <div className="export-options"><p>{t('exportHint')}</p>{dirty && <p className="info-note">{t('saveBeforeExport')}</p>}
-              {pdf && <><label className="field">{t('outputFormat')}<select aria-label={t('outputFormat')} value={pdfFormat} disabled={busy} onChange={event => setPdfFormat(event.target.value as ExportFormat)}><option value="kepub">KEPUB</option><option value="epub">EPUB</option><option value="original">{t(book.customCover ? 'pdfWithCover' : 'originalPdf')}</option></select></label>{pdfFormat !== 'original' ? <p className="info-note">{t('pdfConversionHint')}</p> : book.customCover && <p className="info-note">{t('pdfCoverHint')}</p>}</>}
-              <button className="source-choice" disabled={busy || dirty || !valid} onClick={() => onExport(drafts.map(materialise), pdf ? pdfFormat : 'kepub', true)}><Send size={23}/><span><strong>{t(!pdf || pdfFormat === 'kepub' ? 'convertSend' : pdfFormat === 'epub' ? 'convertEpubSend' : 'sendKobo')}</strong><small>{t(!isAndroid ? 'androidOnly' : pdf ? 'readyKobo' : 'convertSendHint')}</small></span><ArrowRight size={17}/></button>
-              {!pdf && <button className="source-choice" disabled={busy || dirty || !valid} onClick={() => onExport(drafts.map(materialise), 'kepub')}><ArrowDownToLine size={23}/><span><strong>{t(collection ? 'convertZip' : 'convertSave')}</strong><small>{t('readyKobo')}</small></span><ArrowRight size={17}/></button>}
-              <button className="source-choice" disabled={busy || dirty || !valid} onClick={() => onExport(drafts.map(materialise), pdf ? pdfFormat : 'original')}><FolderOpen size={23}/><span><strong>{t(pdf ? pdfFormat === 'original' ? book.customCover ? 'exportPdfCover' : 'exportPdf' : pdfFormat === 'epub' ? 'convertEpubSave' : 'convertSave' : collection ? 'exportZip' : /\.kepub\.epub$/i.test(book.filename) ? 'exportKepub' : 'exportEpub')}</strong><small>{t('originalsPreserved')}</small></span><ArrowRight size={17}/></button>
+              {pdf && <><label className="field">{t('outputFormat')}<select aria-label={t('outputFormat')} value={pdfFormat} disabled={busy} onChange={event => setPdfFormat(event.target.value as ExportFormat)}><option value="kepub">KEPUB</option><option value="epub">EPUB</option><option value="original">{t(book.customCover ? 'pdfWithCover' : 'originalPdf')}</option></select></label>{pdfFormat !== 'original' ? <><p className="info-note">{t('pdfConversionHint')}</p><details className="ocr-options"><summary>{t('ocrOptions')}</summary><p className="hint">{t('ocrHint')}</p><fieldset className="ocr-languages" aria-label={t('ocrOptions')} disabled={busy}>{PDF_OCR_LANGUAGES.map(language => <label key={language} lang={ocrLanguageTags[language]}><input type="checkbox" checked={ocrLanguages.includes(language)} disabled={busy} onChange={event => chooseOcrLanguage(language, event.target.checked)}/>{ocrLanguageNames[language]}</label>)}</fieldset></details></> : book.customCover && <p className="info-note">{t('pdfCoverHint')}</p>}</>}
+              {!ocrReady && <p className="field-error" role="alert">{t('ocrLanguageRequired')}</p>}
+              <button className="source-choice" disabled={busy || dirty || !valid || !ocrReady} onClick={() => exportBooks(pdf ? pdfFormat : 'kepub', true)}><Send size={23}/><span><strong>{t(!pdf || pdfFormat === 'kepub' ? 'convertSend' : pdfFormat === 'epub' ? 'convertEpubSend' : 'sendKobo')}</strong><small>{t(!isAndroid ? 'androidOnly' : pdf ? 'readyKobo' : 'convertSendHint')}</small></span><ArrowRight size={17}/></button>
+              {!pdf && <button className="source-choice" disabled={busy || dirty || !valid || !ocrReadyFor('kepub')} onClick={() => exportBooks('kepub')}><ArrowDownToLine size={23}/><span><strong>{t(collection ? 'convertZip' : 'convertSave')}</strong><small>{t('readyKobo')}</small></span><ArrowRight size={17}/></button>}
+              <button className="source-choice" disabled={busy || dirty || !valid || !ocrReadyFor(pdf ? pdfFormat : 'original')} onClick={() => exportBooks(pdf ? pdfFormat : 'original')}><FolderOpen size={23}/><span><strong>{t(pdf ? pdfFormat === 'original' ? book.customCover ? 'exportPdfCover' : 'exportPdf' : pdfFormat === 'epub' ? 'convertEpubSave' : 'convertSave' : collection ? 'exportZip' : /\.kepub\.epub$/i.test(book.filename) ? 'exportKepub' : 'exportEpub')}</strong><small>{t('originalsPreserved')}</small></span><ArrowRight size={17}/></button>
               {book.customCover && <p className="hint">{t('koboCoverHint')}</p>}
             </div>}
           </div></div>

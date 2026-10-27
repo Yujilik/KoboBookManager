@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterAll, beforeAll, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, expect, it, vi, type Mock } from 'vitest';
 import { createCanvas } from '@napi-rs/canvas';
 import { JSDOM } from 'jsdom';
 import JSZip from 'jszip';
@@ -10,6 +10,15 @@ import { emptyMetadata, readEpub } from '../src/epub';
 import { pdfFixture } from './pdf-fixture';
 import { kepubWithWasm } from './kepub-fixture';
 import { coverFixture } from './cover-fixture';
+import { createPdfOcr, type PdfOcr } from '../src/pdf-ocr';
+
+vi.mock('../src/pdf-ocr', () => ({ createPdfOcr: vi.fn() }));
+let recognize: Mock<PdfOcr['recognize']>, closeOcr: Mock<PdfOcr['close']>;
+beforeEach(() => {
+  recognize = vi.fn<PdfOcr['recognize']>().mockResolvedValue({ text: '', confidence: 0, lines: [] });
+  closeOcr = vi.fn<PdfOcr['close']>().mockResolvedValue(undefined);
+  vi.mocked(createPdfOcr).mockReset().mockResolvedValue({ recognize, close: closeOcr });
+});
 
 const dom = new JSDOM();
 beforeAll(() => {
@@ -17,7 +26,7 @@ beforeAll(() => {
   vi.stubGlobal('XMLSerializer', dom.window.XMLSerializer);
   vi.stubGlobal('document', { createElement: () => {
     const canvas = createCanvas(1, 1);
-    return Object.assign(canvas, { toBlob: (callback: (blob: Blob) => void) => callback(new Blob([new Uint8Array(canvas.encodeSync('jpeg'))], { type: 'image/jpeg' })) });
+    return Object.assign(canvas, { toBlob: (callback: (blob: Blob) => void, mime = 'image/jpeg') => callback(new Blob([new Uint8Array(mime === 'image/png' ? canvas.encodeSync('png') : canvas.encodeSync('jpeg', 94))], { type: mime })) });
   } });
 });
 afterAll(() => { vi.unstubAllGlobals(); dom.window.close(); });
@@ -38,59 +47,57 @@ it('parses a real PDF into an EPUB with reflowable escaped text, cover, navigati
   expect(read.metadata.language).toBe('en-GB');
   expect(read.cover?.mime).toBe('image/jpeg');
   expect(read.cover?.bytes.byteLength).toBeGreaterThan(100);
-  expect(await zip.file('OEBPS/nav.xhtml')!.async('string')).toContain('href="page-1.xhtml"');
+  const nav = new dom.window.DOMParser().parseFromString(await zip.file('OEBPS/nav.xhtml')!.async('string'), 'application/xml');
+  expect(Array.from(nav.querySelectorAll('a')).some(link => link.getAttribute('href')?.startsWith('page-1.xhtml#'))).toBe(true);
   expect(progress.mock.calls.at(-1)).toEqual([100]);
 }, 30_000);
 
-it('keeps scans, blank pages and illustrations as page images instead of producing an empty EPUB or dropping graphics', async () => {
+it('keeps text adjustable beside drawings and preserves genuine picture and blank pages', async () => {
   const pdf = pdfFixture(['0.2 0.4 0.6 rg 40 550 300 200 re f', 'BT /F1 12 Tf 40 750 Td (Illustrated page) Tj ET 0.5 g 40 550 100 100 re f', '']);
   const epub = await pdfToEpub(pdf, emptyMetadata('Illustrated book'), vi.fn());
   const zip = await JSZip.loadAsync(epub);
-  for (const number of [1, 2, 3]) {
+  for (const number of [1, 3]) {
     expect(await zip.file(`OEBPS/page-${number}.xhtml`)!.async('string')).toContain(`<img src="images/page-${number}.jpg"`);
     expect((await zip.file(`OEBPS/images/page-${number}.jpg`)!.async('uint8array')).byteLength).toBeGreaterThan(100);
   }
+  const textPage = await zip.file('OEBPS/page-2.xhtml')!.async('string');
+  expect(textPage).toContain('Illustrated page');
+  expect(textPage).not.toContain('<img');
+  expect(textPage).toMatch(/<p|<h2/);
   const opf = new dom.window.DOMParser().parseFromString(await zip.file('OEBPS/book.opf')!.async('string'), 'application/xml');
   expect(opf.querySelector('parsererror')).toBeNull();
   expect(opf.getElementsByTagName('itemref').length).toBe(3);
 }, 30_000);
 
-it.each([
-  ['unknown', '', 'und'],
-  ['en-GB', '', 'en-GB'],
-  ['en-GB', 'ja', 'ja'],
-])('does not infer font languages from discarded image-page text (source: %s, user: %s)', async (sourceLanguage, userLanguage, expectedLanguage) => {
-  let pdf = pdfFixture(['BT /F1 12 Tf 40 750 Td (Visible page text) Tj ET 0.5 g 40 550 100 100 re f']);
-  if (sourceLanguage === 'unknown') {
-    // Preserve byte offsets while removing the fixture's explicit PDF /Lang.
-    pdf = new TextEncoder().encode(new TextDecoder().decode(pdf).replace('/Lang (en-GB)', '/Lang (     )'));
-  }
+it('recovers an unreadable character map through recognition instead of disguising its text as a page image', async () => {
+  const pdf = pdfFixture(['BT /F1 12 Tf 40 750 Td (Visible page text) Tj ET 0.5 g 40 550 100 100 re f']);
   const task = getDocument({ data: pdf.slice() });
   const source = await task.promise;
   const page = await source.getPage(1);
   const originalGetTextContent = page.getTextContent;
   const prototype = Object.getPrototypeOf(page) as PDFPageProxy;
   await task.destroy();
-  // A broken PDF Unicode map may return real but unrelated script characters.
-  // Rendering still uses the original PDF glyphs, which must remain authoritative.
   const extraction = vi.spyOn(prototype, 'getTextContent').mockImplementation(async function (this: PDFPageProxy, ...args: Parameters<PDFPageProxy['getTextContent']>) {
     const content = await originalGetTextContent.apply(this, args);
-    return { ...content, items: content.items.map(item => 'str' in item ? { ...item, str: 'ᇾฦ日本語' } : item) };
+    return { ...content, items: content.items.map(item => 'str' in item ? { ...item, str: '\uE001\uFFFD' } : item) };
   });
   try {
-    const details = { ...emptyMetadata('Illustrated book'), language: userLanguage };
-    const epub = await pdfToEpub(pdf, details, vi.fn());
-    for (const bytes of [epub, await kepubWithWasm(epub)]) {
-      const zip = await JSZip.loadAsync(bytes);
-      const pageXml = await zip.file('OEBPS/page-1.xhtml')!.async('string');
-      expect(pageXml).toContain('<img src="images/page-1.jpg"');
-      expect(pageXml).toContain(`lang="${expectedLanguage}"`);
-      expect(pageXml).not.toContain('ᇾฦ');
-      const opf = new dom.window.DOMParser().parseFromString(await zip.file('OEBPS/book.opf')!.async('string'), 'application/xml');
-      expect(Array.from(opf.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/', 'language')).map(node => node.textContent)).toEqual([expectedLanguage]);
-    }
+    recognize.mockResolvedValue({ text: 'Recovered readable paragraph', confidence: 93, lines: [{ text: 'Recovered readable paragraph', confidence: 93, bbox: { x0: 40, y0: 80, x1: 240, y1: 120 }, words: [{ text: 'Recovered readable paragraph', confidence: 93, bbox: { x0: 40, y0: 80, x1: 240, y1: 120 } }] }] });
+    const output = await pdfToEpub(pdf, emptyMetadata('Unreadable text'), vi.fn(), undefined, { ocrLanguages: ['eng'] });
+    const zip = await JSZip.loadAsync(output), chapter = await zip.file('OEBPS/page-1.xhtml')!.async('string');
+    expect(chapter).toContain('Recovered readable paragraph');
+    expect(chapter).not.toContain('<img');
+    expect(createPdfOcr).toHaveBeenCalledWith(['eng'], expect.any(Function));
+    expect(closeOcr).toHaveBeenCalled();
   } finally { extraction.mockRestore(); }
 }, 30_000);
+
+it('does not report image-only scans as successful adjustable EPUB conversions', async () => {
+  await expect(pdfToEpub(pdfFixture(['0.2 0.4 0.6 rg 40 550 300 200 re f']), emptyMetadata('Scan'), vi.fn())).rejects.toThrow('pdfTextUnavailable');
+  expect(createPdfOcr).toHaveBeenCalledOnce();
+  expect(recognize).toHaveBeenCalledOnce();
+  expect(closeOcr).toHaveBeenCalled();
+});
 
 it.each([false, true])('omits absent or blank optional metadata from EPUB and KEPUB packages (blank fields: %s)', async blank => {
   const details = emptyMetadata('Book without source metadata');
