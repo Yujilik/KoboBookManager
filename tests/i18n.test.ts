@@ -27,4 +27,12 @@ describe('application languages', () => {
     expect(translatedError(new Error('Este EPUB tem conteúdo protegido por DRM'), translator('en-GB'))).toContain('DRM-protected');
     expect(translatedError(new Error('Seleção de pasta cancelada.'), translator('ja'))).toBe(translator('ja')('cancelled'));
   });
+  it('localises export verification failures from JavaScript and native Android', () => {
+    for (const locale of locales) {
+      const t = translator(locale);
+      expect(translatedError(new Error('outputInvalid'), t)).toBe(t('outputInvalid'));
+      expect(translatedError({ message: 'outputInvalid: File hash mismatch', code: 'OUTPUT_INVALID' }, t)).toBe(t('outputInvalid'));
+      expect(translatedError({ code: 'OUTPUT_INVALID' }, t)).toBe(t('outputInvalid'));
+    }
+  });
 });

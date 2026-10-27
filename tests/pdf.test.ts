@@ -4,7 +4,7 @@ import { createCanvas } from '@napi-rs/canvas';
 import { JSDOM } from 'jsdom';
 import JSZip from 'jszip';
 import { readFile } from 'node:fs/promises';
-import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { getDocument, type PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { pdfToEpub } from '../src/pdf';
 import { emptyMetadata, readEpub } from '../src/epub';
 import { pdfFixture } from './pdf-fixture';
@@ -53,6 +53,84 @@ it('keeps scans, blank pages and illustrations as page images instead of produci
   const opf = new dom.window.DOMParser().parseFromString(await zip.file('OEBPS/book.opf')!.async('string'), 'application/xml');
   expect(opf.querySelector('parsererror')).toBeNull();
   expect(opf.getElementsByTagName('itemref').length).toBe(3);
+}, 30_000);
+
+it.each([
+  ['unknown', '', 'und'],
+  ['en-GB', '', 'en-GB'],
+  ['en-GB', 'ja', 'ja'],
+])('does not infer font languages from discarded image-page text (source: %s, user: %s)', async (sourceLanguage, userLanguage, expectedLanguage) => {
+  let pdf = pdfFixture(['BT /F1 12 Tf 40 750 Td (Visible page text) Tj ET 0.5 g 40 550 100 100 re f']);
+  if (sourceLanguage === 'unknown') {
+    // Preserve byte offsets while removing the fixture's explicit PDF /Lang.
+    pdf = new TextEncoder().encode(new TextDecoder().decode(pdf).replace('/Lang (en-GB)', '/Lang (     )'));
+  }
+  const task = getDocument({ data: pdf.slice() });
+  const source = await task.promise;
+  const page = await source.getPage(1);
+  const originalGetTextContent = page.getTextContent;
+  const prototype = Object.getPrototypeOf(page) as PDFPageProxy;
+  await task.destroy();
+  // A broken PDF Unicode map may return real but unrelated script characters.
+  // Rendering still uses the original PDF glyphs, which must remain authoritative.
+  const extraction = vi.spyOn(prototype, 'getTextContent').mockImplementation(async function (this: PDFPageProxy, ...args: Parameters<PDFPageProxy['getTextContent']>) {
+    const content = await originalGetTextContent.apply(this, args);
+    return { ...content, items: content.items.map(item => 'str' in item ? { ...item, str: 'ᇾฦ日本語' } : item) };
+  });
+  try {
+    const details = { ...emptyMetadata('Illustrated book'), language: userLanguage };
+    const epub = await pdfToEpub(pdf, details, vi.fn());
+    for (const bytes of [epub, await kepubWithWasm(epub)]) {
+      const zip = await JSZip.loadAsync(bytes);
+      const pageXml = await zip.file('OEBPS/page-1.xhtml')!.async('string');
+      expect(pageXml).toContain('<img src="images/page-1.jpg"');
+      expect(pageXml).toContain(`lang="${expectedLanguage}"`);
+      expect(pageXml).not.toContain('ᇾฦ');
+      const opf = new dom.window.DOMParser().parseFromString(await zip.file('OEBPS/book.opf')!.async('string'), 'application/xml');
+      expect(Array.from(opf.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/', 'language')).map(node => node.textContent)).toEqual([expectedLanguage]);
+    }
+  } finally { extraction.mockRestore(); }
+}, 30_000);
+
+it.each([false, true])('omits absent or blank optional metadata from EPUB and KEPUB packages (blank fields: %s)', async blank => {
+  const details = emptyMetadata('Book without source metadata');
+  if (blank) Object.assign(details, {
+    description: ' \n\u0001', publisher: '\t ', published: ' ', isbn: '\u0001',
+    authors: [' ', '\u0001'], tags: ['\n', '\u0001'], series: ' \u0001', seriesIndex: ' ',
+  });
+  const epub = await pdfToEpub(pdfFixture(), details, vi.fn());
+  for (const bytes of [epub, await kepubWithWasm(epub)]) {
+    const zip = await JSZip.loadAsync(bytes);
+    const opf = new dom.window.DOMParser().parseFromString(await zip.file('OEBPS/book.opf')!.async('string'), 'application/xml');
+    const dc = 'http://purl.org/dc/elements/1.1/';
+    expect(opf.querySelector('parsererror')).toBeNull();
+    for (const name of ['description', 'publisher', 'date', 'creator', 'subject']) {
+      expect(opf.getElementsByTagNameNS(dc, name)).toHaveLength(0);
+    }
+    expect(opf.getElementsByTagNameNS(dc, 'identifier')).toHaveLength(1);
+    expect(opf.getElementsByTagNameNS(dc, 'title')[0].textContent).toBe(details.title);
+    expect(opf.querySelector('meta[name="calibre:series"]')).toBeNull();
+  }
+}, 30_000);
+
+it('keeps nonempty optional metadata escaped and omits blank authors and tags', async () => {
+  const details = { ...emptyMetadata('Metadata book'), description: 'Notes & <examples>',
+    publisher: 'A & B', published: '2026-10-27', isbn: '9780000000002',
+    authors: [' ', 'Writer & Editor'], tags: ['', 'Languages & stories'], series: 'Notes & books', seriesIndex: ' ' };
+  const zip = await JSZip.loadAsync(await pdfToEpub(pdfFixture(), details, vi.fn()));
+  const source = await zip.file('OEBPS/book.opf')!.async('string');
+  const opf = new dom.window.DOMParser().parseFromString(source, 'application/xml');
+  const values = (name: string) => Array.from(opf.getElementsByTagNameNS('http://purl.org/dc/elements/1.1/', name)).map(node => node.textContent);
+  expect(opf.querySelector('parsererror')).toBeNull();
+  expect(source).toContain('Notes &amp; &lt;examples&gt;');
+  expect(values('description')).toEqual([details.description]);
+  expect(values('publisher')).toEqual([details.publisher]);
+  expect(values('date')).toEqual([details.published]);
+  expect(values('creator')).toEqual(['Writer & Editor']);
+  expect(values('subject')).toEqual(['Languages & stories']);
+  expect(values('identifier')).toContain('urn:isbn:9780000000002');
+  expect(opf.querySelector('meta[name="calibre:series"]')?.getAttribute('content')).toBe(details.series);
+  expect(opf.querySelector('meta[name="calibre:series_index"]')?.getAttribute('content')).toBe('1');
 }, 30_000);
 
 it('rejects malformed PDFs rather than saving corrupt output', async () => {

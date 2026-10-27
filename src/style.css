@@ -40,6 +40,9 @@
 }
 .back-to-top.visible { opacity: 1; visibility: visible; pointer-events: auto; transition: opacity .025s ease, visibility 0s; }
 .back-to-top:hover { background: #91452f; }
+.delivery-files { list-style: none; margin: 0 0 20px; padding: 0; }
+.delivery-files li { display: flex; flex-direction: column; gap: 6px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 12px; overflow-wrap: anywhere; }
+.delivery-files span { font-size: 11px; }
 [data-theme="dark"] .back-to-top { color: var(--forest-base); }
 [data-theme="dark"] .back-to-top:hover { background: #bad297; }
 @media (max-width: 540px) {

@@ -22,6 +22,10 @@ const visualOperations = new Set([
 ]);
 const xml = (value: string) => value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
+const optionalDc = (name: string, value: string, prefix = '') => {
+  const content = xml(value).trim();
+  return content ? `<dc:${name}>${prefix}${content}</dc:${name}>` : '';
+};
 
 function requiresOriginalGlyphs(items: TextItem[]) {
   return items.some(item => item.dir === 'ttb' || [...item.str].some(character => {
@@ -108,6 +112,7 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
     const metadata = { ...details, title: details.title.trim() || value('Title') || 'Book',
       authors: details.authors.length ? details.authors : value('Author') ? [value('Author')] : [],
       language: languageTag(details.language || value('Language')), description: details.description || value('Subject') };
+    const sourceLanguage = metadata.language;
     const zip = new JSZip();
     zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
     zip.file('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
@@ -132,13 +137,26 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
         const text = await page.getTextContent().catch(() => ({ items: [], lang: null }));
         const items: TextItem[] = [];
         for (const item of text.items) if ('str' in item) items.push(item);
-        const declaredLanguage = languageTag(details.language || text.lang || metadata.language);
-        const pageLanguage = declaredLanguage === 'und' ? textLanguage(items.map(item => item.str).join(''), 'und') : declaredLanguage;
-        if (metadata.language === 'und') metadata.language = pageLanguage;
-        if (pageLanguage !== 'und') languages.add(pageLanguage);
         const operations = await page.getOperatorList();
         const illustrated = operations.fnArray.some(operation => visualOperations.has(operation)) || requiresOriginalGlyphs(items);
-        let content = paragraphs(items, pageLanguage, languages);
+        const declaredLanguage = languageTag(details.language || text.lang || sourceLanguage);
+        let pageLanguage = declaredLanguage;
+        if (declaredLanguage !== 'und') {
+          if (metadata.language === 'und') metadata.language = declaredLanguage;
+          languages.add(declaredLanguage);
+        }
+        let content = '';
+        // Image pages use the original glyphs. Their discarded text can have a
+        // broken Unicode map, so only explicit language declarations apply.
+        if (!illustrated) {
+          const inferredLanguage = declaredLanguage === 'und' ? textLanguage(items.map(item => item.str).join(''), 'und') : declaredLanguage;
+          content = paragraphs(items, inferredLanguage, languages);
+          if (content) {
+            pageLanguage = inferredLanguage;
+            if (metadata.language === 'und') metadata.language = pageLanguage;
+            if (pageLanguage !== 'und') languages.add(pageLanguage);
+          }
+        }
         // Also keep the first page as the EPUB cover, including text-only covers.
         if (number === 1 && !cover || illustrated || !content) {
           const image = await pageImage(page);
@@ -165,7 +183,13 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
     const modified = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
     zip.file('OEBPS/nav.xhtml', `<?xml version="1.0"?><html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="${xml(metadata.language)}"><head><title>${xml(metadata.title)}</title></head><body><nav epub:type="toc"><h1>${xml(metadata.title)}</h1><ol>${navigation.join('')}</ol></nav></body></html>`);
     const languageMetadata = [...new Set([metadata.language, ...languages])].map(language => `<dc:language>${xml(language)}</dc:language>`).join('');
-    zip.file('OEBPS/book.opf', `<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0" unique-identifier="uid"><metadata><dc:identifier id="uid">${identifier}</dc:identifier><dc:title>${xml(metadata.title)}</dc:title>${languageMetadata}${metadata.authors.map(author => `<dc:creator>${xml(author)}</dc:creator>`).join('')}<dc:description>${xml(metadata.description)}</dc:description>${metadata.publisher ? `<dc:publisher>${xml(metadata.publisher)}</dc:publisher>` : ''}${metadata.published ? `<dc:date>${xml(metadata.published)}</dc:date>` : ''}${metadata.tags.map(tag => `<dc:subject>${xml(tag)}</dc:subject>`).join('')}${metadata.isbn ? `<dc:identifier>urn:isbn:${xml(metadata.isbn)}</dc:identifier>` : ''}${metadata.series ? `<meta name="calibre:series" content="${xml(metadata.series)}"/><meta name="calibre:series_index" content="${xml(metadata.seriesIndex || '1')}"/>` : ''}<meta property="dcterms:modified">${modified}</meta><meta name="cover" content="${coverId}"/></metadata><manifest>${manifest.join('')}</manifest><spine>${spine.join('')}</spine></package>`);
+    const optionalMetadata = metadata.authors.map(author => optionalDc('creator', author)).join('') +
+      optionalDc('description', metadata.description) + optionalDc('publisher', metadata.publisher) +
+      optionalDc('date', metadata.published) + metadata.tags.map(tag => optionalDc('subject', tag)).join('') +
+      optionalDc('identifier', metadata.isbn, 'urn:isbn:');
+    const series = xml(metadata.series).trim();
+    const seriesMetadata = series ? `<meta name="calibre:series" content="${series}"/><meta name="calibre:series_index" content="${xml(metadata.seriesIndex).trim() || '1'}"/>` : '';
+    zip.file('OEBPS/book.opf', `<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0" unique-identifier="uid"><metadata><dc:identifier id="uid">${identifier}</dc:identifier><dc:title>${xml(metadata.title)}</dc:title>${languageMetadata}${optionalMetadata}${seriesMetadata}<meta property="dcterms:modified">${modified}</meta><meta name="cover" content="${coverId}"/></metadata><manifest>${manifest.join('')}</manifest><spine>${spine.join('')}</spine></package>`);
     const output = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 6 } });
     if (output.byteLength > MAX_BOOK_SIZE) throw new Error('pdfConversionTooLarge');
     progress(100);

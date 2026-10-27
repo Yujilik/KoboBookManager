@@ -45,6 +45,7 @@ public class DeliveryServerTest {
             assertTrue(invalid.contains("404 Not Found"));
             String page = new String(request(server, "/" + server.code()), StandardCharsets.UTF_8);
             assertTrue(page.contains("/" + server.code() + "/book.kepub.epub"));
+            assertTrue(page.contains("<small>book.kepub.epub</small>"));
             byte[] download = request(server, "/" + server.code() + "/book.kepub.epub");
             String raw = new String(download, StandardCharsets.ISO_8859_1);
             int start = raw.indexOf("\r\n\r\n") + 4;
@@ -52,6 +53,23 @@ public class DeliveryServerTest {
             assertTrue(raw.contains("filename=\"book.kepub.epub\""));
             assertArrayEquals(payload, java.util.Arrays.copyOfRange(download, start, download.length));
             assertTrue(new String(request(server, "/" + server.code() + "/../secret"), StandardCharsets.UTF_8).contains("404 Not Found"));
+        } finally { file.delete(); }
+    }
+
+    @Test public void refusesEmptyFilesAndStopsServingTruncatedOrChangedPayloads() throws Exception {
+        File file = File.createTempFile("kobo-empty", ".epub");
+        try {
+            assertThrows(IOException.class, () -> new DeliveryServer(file, "book.epub", "application/epub+zip", 0));
+            byte[] payload = new byte[]{80, 75, 3, 4, 1, 2, 3, 4}; Files.write(file.toPath(), payload);
+            StringBuilder hash = new StringBuilder();
+            for (byte value : java.security.MessageDigest.getInstance("SHA-256").digest(payload)) hash.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
+            DeliveryServer.Entry checked = new DeliveryServer.Entry(file, "book.epub", "application/epub+zip", "Book", payload.length, hash.toString());
+            try (DeliveryServer server = new DeliveryServer(java.util.Collections.singletonList(checked), "en-GB", java.util.Collections.emptyMap(), 0)) {
+                Files.write(file.toPath(), new byte[]{80, 75, 3, 4, 9, 9, 9, 9});
+                assertTrue(new String(request(server, "/" + server.code() + "/book.epub"), StandardCharsets.US_ASCII).contains("410 Gone"));
+                Files.write(file.toPath(), new byte[0]);
+                assertTrue(new String(request(server, "/" + server.code() + "/book.epub"), StandardCharsets.US_ASCII).contains("410 Gone"));
+            }
         } finally { file.delete(); }
     }
 }

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHash, webcrypto } from 'node:crypto';
 import { Filesystem } from '@capacitor/filesystem';
 import { native, fromBase64 } from '../src/native';
 import { original } from '../src/library';
@@ -14,27 +15,47 @@ import { pdfFixture } from './pdf-fixture';
 import { coverDataURL, coverFixture } from './cover-fixture';
 import { PDFDocument } from 'pdf-lib';
 
-vi.mock('@capacitor/filesystem', () => ({ Directory: { Cache: 'CACHE' }, Filesystem: { writeFile: vi.fn() } }));
+vi.mock('@capacitor/filesystem', () => ({ Directory: { Cache: 'CACHE' }, Filesystem: { writeFile: vi.fn(), stat: vi.fn(), deleteFile: vi.fn() } }));
 vi.mock('../src/native', async importOriginal => ({
   ...await importOriginal<typeof import('../src/native')>(),
   isAndroid: true,
-  native: { saveDocument: vi.fn(), startDelivery: vi.fn() },
+  native: { saveDocument: vi.fn(), startDelivery: vi.fn(), stopDelivery: vi.fn() },
 }));
 vi.mock('../src/library', () => ({ original: vi.fn() }));
 vi.mock('../src/converter', () => ({ convert: vi.fn() }));
 vi.mock('../src/pdf', () => ({ pdfToEpub: vi.fn() }));
 
-const converted = new Uint8Array([75, 69, 80, 85, 66]);
+let converted: Uint8Array, extracted: Uint8Array;
+const cache = new Map<string, Uint8Array>();
+const hash = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 const book = (id = 'one'): Book => ({ ...emptyMetadata('Edited title'), id, filename: 'original.epub', format: 'epub', size: 100, added: '', updated: '' });
 const send = (books: Book[], format: ExportFormat = 'kepub') => exportCollection(books, format, true, 'en-GB', translator('en-GB'), vi.fn());
 
 beforeEach(async () => {
   vi.resetAllMocks();
+  vi.stubGlobal('crypto', webcrypto);
+  cache.clear();
+  extracted = await fixture('3.0', false);
+  converted = await fixture('3.0', true);
+  vi.mocked(Filesystem.writeFile).mockImplementation(async ({ path, data }) => {
+    cache.set(path, fromBase64(data as string));
+    return { uri: `file:///cache/${path}` };
+  });
+  vi.mocked(Filesystem.stat).mockImplementation(async ({ path }) => ({
+    type: 'file', name: 'payload', size: cache.get(path)!.byteLength, uri: `file:///cache/${path}`, ctime: 0, mtime: 0,
+  }));
+  vi.mocked(Filesystem.deleteFile).mockImplementation(async ({ path }) => { cache.delete(path); });
   vi.mocked(original).mockResolvedValue(await fixture('3.0', false));
   vi.mocked(convert).mockResolvedValue(converted);
-  vi.mocked(pdfToEpub).mockResolvedValue(await fixture('3.0', false));
-  vi.mocked(native.startDelivery).mockResolvedValue({ urls: ['http://localhost:8080'], code: '123456', port: 8080 });
+  vi.mocked(pdfToEpub).mockResolvedValue(extracted);
+  vi.mocked(native.saveDocument).mockImplementation(async ({ size, sha256 }) => ({ uri: 'content://saved/book', size, sha256 }));
+  vi.mocked(native.startDelivery).mockImplementation(async ({ files }) => ({
+    urls: ['http://localhost:8080'], code: '123456', port: 8080,
+    files: files.map(({ name, mime, size, sha256 }) => ({ name, mime, size, sha256 })),
+  }));
+  vi.mocked(native.stopDelivery).mockResolvedValue(undefined);
 });
+afterEach(() => vi.unstubAllGlobals());
 
 describe('convert and send in one operation', () => {
   it('applies edits, converts and delivers the converted bytes without opening a save dialog', async () => {
@@ -96,11 +117,11 @@ describe('convert and send in one operation', () => {
     expect(pdfToEpub).toHaveBeenCalledWith(pdf, source, expect.any(Function));
     const saved = fromBase64(vi.mocked(Filesystem.writeFile).mock.calls[0][0].data as string);
     if (format === 'kepub') {
-      expect(convert).toHaveBeenCalledWith(await fixture('3.0', false), expect.any(Function));
+      expect(convert).toHaveBeenCalledWith(extracted, expect.any(Function));
       expect(saved).toEqual(converted);
     } else {
       expect(convert).not.toHaveBeenCalled();
-      expect(saved).toEqual(await fixture('3.0', false));
+      expect(saved).toEqual(extracted);
     }
     expect(native.startDelivery).toHaveBeenCalledWith(expect.objectContaining({
       files: [expect.objectContaining({ name: `Edited title.${format === 'kepub' ? 'kepub.epub' : 'epub'}`, mime: 'application/epub+zip' })],
@@ -113,6 +134,16 @@ describe('convert and send in one operation', () => {
     expect(native.saveDocument).toHaveBeenCalledWith(expect.objectContaining({
       name: `Edited title.${format === 'kepub' ? 'kepub.epub' : 'epub'}`, mime: 'application/epub+zip',
     }));
+    const options = vi.mocked(native.saveDocument).mock.calls[0][0];
+    const bytes = format === 'kepub' ? converted : extracted;
+    expect(options).toEqual({
+      path: expect.stringMatching(/^exports\/[^/]+\/payload$/),
+      name: `Edited title.${format === 'kepub' ? 'kepub.epub' : 'epub'}`,
+      mime: 'application/epub+zip', size: bytes.length, sha256: hash(bytes),
+    });
+    expect(options).not.toHaveProperty('data');
+    expect(Filesystem.deleteFile).toHaveBeenCalledWith({ directory: 'CACHE', path: options.path });
+    expect(cache.size).toBe(0);
     expect(native.startDelivery).not.toHaveBeenCalled();
   });
 
@@ -163,5 +194,91 @@ describe('convert and send in one operation', () => {
     expect(Filesystem.writeFile).not.toHaveBeenCalled();
     expect(native.startDelivery).not.toHaveBeenCalled();
     expect(native.saveDocument).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['empty', new Uint8Array()],
+    ['PDF', new TextEncoder().encode('%PDF-1.7 original source')],
+    ['corrupt ZIP', new Uint8Array([80, 75, 3, 4, 0, 0])],
+  ] as const)('rejects %s PDF-to-EPUB output for both saving and delivery without a source fallback', async (_label, bytes) => {
+    vi.mocked(original).mockResolvedValue(pdfFixture());
+    vi.mocked(pdfToEpub).mockResolvedValue(bytes);
+    const source = { ...book(), format: 'pdf' as const, filename: 'original.pdf' };
+    for (const delivery of [false, true]) {
+      await expect(exportCollection([source], 'epub', delivery, 'en-GB', translator('en-GB'), vi.fn())).rejects.toThrow();
+    }
+    expect(convert).not.toHaveBeenCalled();
+    expect(Filesystem.writeFile).not.toHaveBeenCalled();
+    expect(native.saveDocument).not.toHaveBeenCalled();
+    expect(native.startDelivery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['empty', new Uint8Array()],
+    ['PDF', new TextEncoder().encode('%PDF-1.7 original source')],
+    ['corrupt ZIP', new Uint8Array([80, 75, 3, 4, 0, 0])],
+  ] as const)('rejects %s KEPUB output for both saving and delivery without a source fallback', async (_label, bytes) => {
+    vi.mocked(original).mockResolvedValue(pdfFixture());
+    vi.mocked(convert).mockResolvedValue(bytes);
+    const source = { ...book(), format: 'pdf' as const, filename: 'original.pdf' };
+    for (const delivery of [false, true]) {
+      await expect(exportCollection([source], 'kepub', delivery, 'en-GB', translator('en-GB'), vi.fn())).rejects.toThrow();
+    }
+    expect(Filesystem.writeFile).not.toHaveBeenCalled();
+    expect(native.saveDocument).not.toHaveBeenCalled();
+    expect(native.startDelivery).not.toHaveBeenCalled();
+  });
+
+  it.each([0, 1])('rejects a %s-byte staged file and discards it before opening save or delivery', async size => {
+    vi.mocked(Filesystem.stat).mockResolvedValue({ type: 'file', name: 'payload', size, uri: 'file:///cache/payload', ctime: 0, mtime: 0 });
+    for (const delivery of [false, true]) {
+      await expect(exportCollection([book()], 'kepub', delivery, 'en-GB', translator('en-GB'), vi.fn())).rejects.toThrow('outputInvalid');
+    }
+    expect(native.saveDocument).not.toHaveBeenCalled();
+    expect(native.startDelivery).not.toHaveBeenCalled();
+    expect(Filesystem.deleteFile).toHaveBeenCalledTimes(2);
+    expect(cache.size).toBe(0);
+  });
+
+  it.each(['size', 'sha256', 'uri'] as const)('rejects an invalid save %s receipt and releases the staged copy', async field => {
+    vi.mocked(native.saveDocument).mockImplementation(async ({ size, sha256 }) => ({
+      size: field === 'size' ? 0 : size,
+      sha256: field === 'sha256' ? '0'.repeat(64) : sha256,
+      uri: field === 'uri' ? '' : 'content://saved/book',
+    }));
+    await expect(exportCollection([book()], 'kepub', false, 'en-GB', translator('en-GB'), vi.fn())).rejects.toThrow('outputInvalid');
+    expect(cache.size).toBe(0);
+    expect(Filesystem.deleteFile).toHaveBeenCalledOnce();
+  });
+
+  it.each(['size', 'sha256', 'mime', 'name', 'missing'] as const)('stops delivery and releases staged files on an invalid %s receipt', async field => {
+    vi.mocked(native.startDelivery).mockImplementation(async ({ files }) => ({
+      urls: ['http://localhost:8080'], code: '123456', port: 8080,
+      files: field === 'missing' ? [] : files.map(({ name, mime, size, sha256 }) => ({
+        name: field === 'name' ? 'source.pdf' : name,
+        mime: field === 'mime' ? 'application/pdf' : mime,
+        size: field === 'size' ? 0 : size,
+        sha256: field === 'sha256' ? '0'.repeat(64) : sha256,
+      })),
+    }));
+    await expect(send([book()])).rejects.toThrow('outputInvalid');
+    expect(native.stopDelivery).toHaveBeenCalledOnce();
+    expect(cache.size).toBe(0);
+  });
+
+  it('cleans up previously staged books if a later conversion fails', async () => {
+    vi.mocked(convert).mockResolvedValueOnce(converted).mockRejectedValueOnce(new Error('conversionFailed'));
+    await expect(send([book('one'), book('two')])).rejects.toThrow('conversionFailed');
+    expect(Filesystem.writeFile).toHaveBeenCalledOnce();
+    expect(Filesystem.deleteFile).toHaveBeenCalledOnce();
+    expect(cache.size).toBe(0);
+    expect(native.startDelivery).not.toHaveBeenCalled();
+  });
+
+  it('releases the staged copy if the document picker is cancelled', async () => {
+    vi.mocked(native.saveDocument).mockRejectedValue(new Error('cancelled'));
+    await expect(exportCollection([book()], 'kepub', false, 'en-GB', translator('en-GB'), vi.fn())).rejects.toThrow('cancelled');
+    expect(cache.size).toBe(0);
+    expect(native.startDelivery).not.toHaveBeenCalled();
   });
 });

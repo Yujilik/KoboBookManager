@@ -12,6 +12,7 @@ export function useI18n() { const value = useContext(Context); if (!value) throw
 
 export function translatedError(error: unknown, t: Translate): string {
   const message = error instanceof Error ? error.message : String((error as { message?: unknown })?.message ?? error);
+  if (/outputInvalid|OUTPUT_INVALID/.test(message) || (error as { code?: unknown })?.code === 'OUTPUT_INVALID') return t('outputInvalid');
   if (message === 'pdfPasswordRequired') return t('pdfPasswordRequired');
   if (message === 'pdfConversionTooLarge') return t('pdfConversionTooLarge');
   if (message === 'pdfCoverFailed') return t('pdfCoverFailed');

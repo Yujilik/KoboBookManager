@@ -2,13 +2,16 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 
 export interface Folder { uri: string; name: string }
 export interface FolderFile { uri: string; name: string; size: number; modified: string }
-export interface Delivery { urls: string[]; code: string; port: number }
+export interface OutputReceipt { size: number; sha256: string }
+export interface StagedFile extends OutputReceipt { path: string; name: string; mime: string }
+export interface DeliveryFile extends OutputReceipt { name: string; mime: string }
+export interface Delivery { urls: string[]; code: string; port: number; files: DeliveryFile[] }
 interface KoboNative {
   chooseFolder(): Promise<Folder>;
   scanFolder(options: { uri: string }): Promise<{ files: FolderFile[] }>;
   readDocument(options: { uri: string }): Promise<{ data: string }>;
-  saveDocument(options: { name: string; mime: string; data: string }): Promise<{ uri: string }>;
-  startDelivery(options: { path?: string; name?: string; mime?: string; files?: { path: string; name: string; mime: string; title: string }[]; locale?: string; labels?: Record<string, string> }): Promise<Delivery>;
+  saveDocument(options: StagedFile): Promise<OutputReceipt & { uri: string }>;
+  startDelivery(options: { files: (StagedFile & { title: string })[]; locale: string; labels: Record<string, string> }): Promise<Delivery>;
   stopDelivery(): Promise<void>;
 }
 export const native = registerPlugin<KoboNative>('KoboNative');

@@ -12,11 +12,17 @@ public final class DeliveryServer implements AutoCloseable {
     public static final class Entry {
         final File file;
         final String filename, mime, title;
+        final long size;
+        final String sha256;
         public Entry(File file, String filename, String mime, String title) {
+            this(file, filename, mime, title, file.length(), null);
+        }
+        public Entry(File file, String filename, String mime, String title, long size, String sha256) {
             this.file = file;
             this.filename = filename.replaceAll("[^A-Za-z0-9._-]", "_");
             this.mime = "application/pdf".equals(mime) ? mime : "application/epub+zip";
             this.title = title;
+            this.size = size; this.sha256 = sha256;
         }
     }
     private final ServerSocket server;
@@ -31,6 +37,10 @@ public final class DeliveryServer implements AutoCloseable {
     }
     public DeliveryServer(List<Entry> entries, String locale, Map<String, String> labels, int port) throws IOException {
         if (entries.isEmpty()) throw new IOException("No delivery files");
+        for (Entry entry : entries) {
+            if (!entry.file.isFile() || entry.size <= 0 || entry.file.length() != entry.size) throw new IOException("Delivery output is missing, empty or truncated");
+            if (entry.sha256 != null) ExportPayload.verifyFile(entry.file, entry.size, entry.sha256);
+        }
         this.entries = new ArrayList<>(entries);
         this.locale = locale.matches("[a-zA-Z-]{2,16}") ? locale : "en-GB";
         this.labels = new HashMap<>(labels);
@@ -73,15 +83,19 @@ public final class DeliveryServer implements AutoCloseable {
         }
         if (path.equals("/" + code) || path.equals("/" + code + "/")) {
             StringBuilder body = new StringBuilder("<h1>" + label("readyKobo", "Ready for your Kobo") + "</h1><ol>");
-            for (int i = 0; i < entries.size(); i++) body.append("<li style='margin-bottom:24px'><a href='").append(route(i)).append("'>").append(label("download", "Download")).append(": ").append(escape(entries.get(i).title)).append("</a></li>");
+            for (int i = 0; i < entries.size(); i++) body.append("<li style='margin-bottom:24px'><a href='").append(route(i)).append("'>").append(label("download", "Download")).append(": ").append(escape(entries.get(i).title)).append("</a><br><small>").append(escape(entries.get(i).filename)).append("</small></li>");
             body.append("</ol><p>").append(label("closeBrowser", "After downloading, close the browser to find your books in the library.")).append("</p>");
             page(out, "200 OK", body.toString(), head); return;
         }
         Entry selected = null;
         for (int i = 0; i < entries.size(); i++) if (path.equals(route(i))) { selected = entries.get(i); break; }
         if (selected == null) { page(out, "404 Not Found", label("notFound", "File not found."), head); return; }
-        if (!selected.file.isFile()) { page(out, "410 Gone", label("notFound", "File not found."), head); return; }
-        out.write(("HTTP/1.1 200 OK\r\nContent-Type: " + selected.mime + "\r\nContent-Length: " + selected.file.length() + "\r\nContent-Disposition: attachment; filename=\"" + selected.filename + "\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+        if (!selected.file.isFile() || selected.file.length() != selected.size) { page(out, "410 Gone", label("notFound", "File not found."), head); return; }
+        if (selected.sha256 != null) {
+            try { ExportPayload.verifyFile(selected.file, selected.size, selected.sha256); }
+            catch (IOException changed) { page(out, "410 Gone", label("notFound", "File not found."), head); return; }
+        }
+        out.write(("HTTP/1.1 200 OK\r\nContent-Type: " + selected.mime + "\r\nContent-Length: " + selected.size + "\r\nContent-Disposition: attachment; filename=\"" + selected.filename + "\"\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
         if (!head) try (InputStream bytes = new FileInputStream(selected.file)) { byte[] buffer = new byte[32768]; int n; while ((n = bytes.read(buffer)) != -1) out.write(buffer, 0, n); }
         out.flush();
     }

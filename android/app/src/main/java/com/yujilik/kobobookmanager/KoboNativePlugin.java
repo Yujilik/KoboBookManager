@@ -86,9 +86,20 @@ public class KoboNativePlugin extends Plugin {
     }
 
     @PluginMethod public void saveDocument(PluginCall call) {
-        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-        intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType(call.getString("mime", "application/octet-stream")); intent.putExtra(Intent.EXTRA_TITLE, call.getString("name", "livro.epub"));
-        startActivityForResult(call, intent, "documentCreated");
+        getBridge().execute(() -> {
+            try {
+                // Keep only a small cache reference in the activity's saved state.
+                // Carrying base64 here duplicates the whole file into Android's Bundle.
+                checkedOutput(call.getData());
+                call.getData().remove("data");
+                if (getActivity() == null) throw new IOException("Save activity is unavailable");
+                getActivity().runOnUiThread(() -> {
+                    Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE); intent.setType(call.getString("mime")); intent.putExtra(Intent.EXTRA_TITLE, call.getString("name"));
+                    startActivityForResult(call, intent, "documentCreated");
+                });
+            } catch (Exception e) { call.reject("outputInvalid: " + e.getMessage(), "OUTPUT_INVALID", e); }
+        });
     }
 
     @ActivityCallback private void documentCreated(PluginCall call, ActivityResult result) {
@@ -96,29 +107,51 @@ public class KoboNativePlugin extends Plugin {
         if (result.getResultCode() != Activity.RESULT_OK || result.getData() == null || result.getData().getData() == null) { call.reject("Arquivo não salvo: seleção cancelada."); return; }
         Uri uri = result.getData().getData();
         getBridge().execute(() -> {
-            try (OutputStream out = getContext().getContentResolver().openOutputStream(uri, "wt")) {
-                if (out == null) throw new IOException("Destino indisponível.");
-                out.write(Base64.decode(call.getString("data", ""), Base64.DEFAULT));
-                JSObject answer = new JSObject(); answer.put("uri", uri.toString()); call.resolve(answer);
-            } catch (Exception e) { call.reject("Não foi possível salvar o arquivo no destino escolhido.", e); }
+            try {
+                ExportPayload.Checked checked = checkedOutput(call.getData());
+                try (InputStream input = new FileInputStream(checked.file);
+                     OutputStream output = getContext().getContentResolver().openOutputStream(uri, "wt")) {
+                    ExportPayload.copy(input, output, checked.size, checked.sha256);
+                }
+                // Some providers only commit bytes when their output stream closes.
+                try (InputStream readback = getContext().getContentResolver().openInputStream(uri)) {
+                    ExportPayload.verifyStream(readback, checked.size, checked.sha256);
+                }
+                JSObject answer = new JSObject(); answer.put("uri", uri.toString()); answer.put("size", checked.size); answer.put("sha256", checked.sha256); call.resolve(answer);
+            } catch (Exception e) {
+                deleteIncomplete(uri);
+                call.reject("Não foi possível salvar o arquivo no destino escolhido: " + e.getMessage(), e);
+            }
         });
     }
 
+    private ExportPayload.Checked checkedOutput(org.json.JSONObject options) throws Exception {
+        if (options.has("data")) throw new IOException("Use a staged export instead of a base64 activity payload");
+        return ExportPayload.validate(getContext().getCacheDir(), options.getString("path"), options.getString("name"),
+            options.getString("mime"), options.getLong("size"), options.getString("sha256"));
+    }
+
+    private void deleteIncomplete(Uri uri) {
+        try { if (DocumentsContract.deleteDocument(getContext().getContentResolver(), uri)) return; } catch (Exception ignored) {}
+        try { getContext().getContentResolver().delete(uri, null, null); } catch (Exception ignored) {}
+    }
+
     @PluginMethod public void startDelivery(PluginCall call) {
+        getBridge().execute(() -> {
+        boolean outputsValidated = false;
         try {
             stop();
             List<DeliveryServer.Entry> entries = new ArrayList<>();
             JSArray files = call.getArray("files");
-            if (files == null) {
-                files = new JSArray();
-                JSObject single = new JSObject(); single.put("path", call.getString("path")); single.put("name", call.getString("name", "book.epub")); single.put("mime", call.getString("mime", "application/epub+zip")); single.put("title", call.getString("name", "book.epub")); files.put(single);
-            }
+            if (files == null || files.length() == 0) throw new IOException("No staged delivery files");
+            JSArray receipts = new JSArray();
             for (int i = 0; i < files.length(); i++) {
                 org.json.JSONObject item = files.getJSONObject(i);
-                File file = new File(getContext().getCacheDir(), item.getString("path")).getCanonicalFile();
-                if (!file.getPath().startsWith(getContext().getCacheDir().getCanonicalPath() + File.separator) || !file.isFile()) throw new IOException("Invalid delivery file");
-                entries.add(new DeliveryServer.Entry(file, item.getString("name"), item.optString("mime", "application/epub+zip"), item.optString("title", item.getString("name"))));
+                ExportPayload.Checked checked = checkedOutput(item);
+                entries.add(new DeliveryServer.Entry(checked.file, item.getString("name"), checked.mime, item.optString("title", item.getString("name")), checked.size, checked.sha256));
+                JSObject receipt = new JSObject(); receipt.put("name", item.getString("name")); receipt.put("mime", checked.mime); receipt.put("size", checked.size); receipt.put("sha256", checked.sha256); receipts.put(receipt);
             }
+            outputsValidated = true;
             Map<String, String> labels = new HashMap<>();
             JSObject values = call.getObject("labels");
             if (values != null) { Iterator<String> keys = values.keys(); while (keys.hasNext()) { String key = keys.next(); labels.put(key, values.getString(key)); } }
@@ -138,8 +171,13 @@ public class KoboNativePlugin extends Plugin {
             }
             if (urls.length() == 0) { stop(); throw new IOException("Conecte-se ao Wi-Fi ou ative o hotspot e tente novamente."); }
             getActivity().runOnUiThread(() -> getActivity().getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON));
-            JSObject answer = new JSObject(); answer.put("urls", urls); answer.put("code", delivery.code()); answer.put("port", delivery.port()); call.resolve(answer);
-        } catch (Exception e) { call.reject("Não foi possível iniciar o envio: " + e.getMessage(), e); }
+            JSObject answer = new JSObject(); answer.put("urls", urls); answer.put("code", delivery.code()); answer.put("port", delivery.port()); answer.put("files", receipts); call.resolve(answer);
+        } catch (Exception e) {
+            stop();
+            if (outputsValidated) call.reject("networkFailed: " + e.getMessage(), "NETWORK_FAILED", e);
+            else call.reject("outputInvalid: " + e.getMessage(), "OUTPUT_INVALID", e);
+        }
+        });
     }
 
     @PluginMethod public void stopDelivery(PluginCall call) { stop(); call.resolve(); }
