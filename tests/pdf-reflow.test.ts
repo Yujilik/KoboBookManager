@@ -10,6 +10,17 @@ const parse = (html: string) => new DOMParser().parseFromString(`<body>${html}</
 const reflow = (items: TextItem[], language = 'en') => reflowText(items, language, new Set());
 
 describe('PDF text reading order and relative typography', () => {
+  it('does not promote a narrative sentence to a heading because an OCR row has an inflated size', () => {
+    const source = [item('The preceding ordinary narrative fills this source line.', 20, 180, 300), item('Hagrid was so huge that this ordinary sentence kept going.', 20, 162, 300, 17), item('and the next normal line continues its paragraph.', 20, 144, 290)];
+    const body = parse(reflowText(source, 'en', new Set(), { ocr: true }));
+    expect(body.querySelector('h2')).toBeNull();
+    expect(body.textContent).toContain('Hagrid was so huge');
+    const digital = [item('A Genuine Chapter Title', 20, 240, 260, 20), ...source, item('Additional regular body text.', 20, 126, 250), item('More ordinary source font information.', 20, 108, 250), item('The final ordinary source line.', 20, 90, 250)];
+    const title = parse(reflowText(digital, 'en', new Set()));
+    expect(title.querySelector('h2')?.textContent).toBe('A Genuine Chapter Title');
+    expect(parse(reflowText(digital, 'en', new Set(), { ocr: true })).querySelector('h2')).toBeNull();
+  });
+
   it('reads each column from top to bottom before the next, with the running footer last', () => {
     const source: TextItem[] = [item('48 Book footer', 20, 20, 90, 9)];
     for (let i = 0; i < 4; i++) {
@@ -113,6 +124,132 @@ describe('PDF text reading order and relative typography', () => {
 
   it('returns no image or placeholder when a page has no meaningful text', () => {
     expect(reflow([item(' ', 10, 10), item('', 10, 20), item('\u0001', 10, 30)])).toBe('');
+  });
+
+  it('infers prose indentation from the repeated text margin instead of isolated OCR debris at the crop edge', () => {
+    const body = parse(reflow([
+      item('An opening line that reaches the column edge', 77.8, 262.1, 232, 10.7),
+      item('continues on the next physical line without ending', 32.4, 246.9, 277, 10.3),
+      item('the paragraph.', 32.4, 231.3, 85, 10.7),
+      item('The following paragraph starts indented and', 43.2, 215.9, 266, 10.9),
+      item('flows across the full column', 32.6, 200.5, 277, 10.3),
+      item('before it ends here.', 32.4, 185.1, 100, 10.7),
+      item('a', 0, 61.4, 4, 8.2), item('Bi ee dicta ston', 0, 0, 18, 4.3),
+    ]));
+    expect(Array.from(body.querySelectorAll('p')).map(p => p.textContent).slice(0, 2)).toEqual([
+      'An opening line that reaches the column edge continues on the next physical line without ending the paragraph.',
+      'The following paragraph starts indented and flows across the full column before it ends here.',
+    ]);
+  });
+
+  it('moves a dropped initial beside the first prose line before sorting and keeps the paragraph reader-controlled', () => {
+    const body = parse(reflow([
+      item('M ', 20, 120, 32, 36), item('r. Example starts the paragraph and', 55, 144, 245, 12),
+      item('continues with ordinary body text on the next line', 55, 126, 245, 12),
+      item('before the final sentence.', 20, 108, 150, 12),
+    ]));
+    expect(body.querySelectorAll('p')).toHaveLength(1);
+    expect(body.textContent).toBe('Mr. Example starts the paragraph and continues with ordinary body text on the next line before the final sentence.');
+    expect(body.querySelector('h2')).toBeNull();
+  });
+
+  it('removes physical line-wrap hyphens when joining a continued word, including across a link', () => {
+    const body = parse(reflowText([
+      item('The line contains a word split in-', 20, 150, 280),
+      item('to a continuation, and an un\u00ad', 20, 132, 280),
+      item('broken soft-hyphen word.', 20, 114, 170),
+    ], 'en', new Set(), { links: [{ rect: [20, 147, 300, 163], href: 'page-2.xhtml#pdf-page-2' }] }));
+    expect(body.querySelectorAll('p')).toHaveLength(1);
+    expect(body.textContent).toBe('The line contains a word split into a continuation, and an unbroken soft-hyphen word.');
+    expect(body.querySelector('a')?.getAttribute('href')).toBe('page-2.xhtml#pdf-page-2');
+    expect(body.querySelector('a')?.textContent).toBe('The line contains a word split in');
+  });
+
+  it('joins a corrected tall initial to its nearby longer lowercase word fragment without inventing a space', () => {
+    const body = parse(reflow([
+      item('N', 20, 120, 34.5, 36), item('early everyone continued the opening', 55, 144, 245, 12),
+      item('paragraph beside its decorated initial', 55, 126, 245, 12), item('and finished the sentence.', 20, 108, 150, 12),
+    ]));
+    expect(body.querySelector('p')?.textContent).toContain('Nearly everyone');
+    expect(body.querySelectorAll('p')).toHaveLength(1);
+  });
+
+  it('uses a faithful inline word image in ordinary prose, skipping only the replaced source identities', () => {
+    const initial = item('NN', 20, 100, 35, 32), remainder = item('t.', 55, 124, 12, 12);
+    const anchor = item('\ufffc', 20, 124, 47, 12), body = item('and a completely adjustable paragraph continues here.', 75, 124, 240, 12);
+    const html = reflowText([initial, remainder, anchor, body], 'en', new Set(), { inlineImages: [{ item: anchor, replace: [initial, remainder, anchor], src: 'images/first-word-1.png', alt: '', aspect: 2.5 }] });
+    const document = parse(html), image = document.querySelector('p img')!;
+    expect(document.querySelectorAll('p')).toHaveLength(1); expect(document.querySelector('h2')).toBeNull();
+    expect(image.getAttribute('src')).toBe('images/first-word-1.png'); expect(image.getAttribute('style')).toContain('height:1em;width:2.5em');
+    expect(document.textContent).toContain('and a completely adjustable paragraph'); expect(html).not.toMatch(/NN|\ufffc|>t\.</);
+  });
+
+  it('keeps PDF links and destination anchors attached to an inline source-word image', () => {
+    const anchor = item('', 20, 100, 35, 12), following = item('ordinary following words.', 64, 100, 150, 12);
+    const document = parse(reflowText([anchor, following], 'en', new Set(), {
+      inlineImages: [{ item: anchor, replace: [], src: 'images/word.jpg', alt: 'Source word', aspect: 2 }],
+      links: [{ rect: [20, 98, 55, 112], href: 'page-2.xhtml#pdf-page-2' }], targets: [{ id: 'initial-target', x: 20, y: 100 }],
+    }));
+    expect(document.querySelector('#initial-target a img')?.getAttribute('alt')).toBe('Source word');
+    expect(document.querySelector('a')?.getAttribute('href')).toBe('page-2.xhtml#pdf-page-2'); expect(document.textContent).toContain('ordinary following words.');
+  });
+
+  it('rejects unsafe or invalid source-word image locations before removing any text', () => {
+    const anchor = item('Source', 20, 100, 40, 12);
+    for (const src of ['javascript:alert(1)', 'https://example.org/word.png', '../outside.png']) expect(() => reflowText([anchor], 'en', new Set(), { inlineImages: [{ item: anchor, replace: [], src, alt: '', aspect: 2 }] })).toThrow('conversionFailed');
+  });
+
+  it('retains hanging source-line context after a tall decorated word becomes a normal-height inline image', () => {
+    const anchor = item('', 20, 144, 47, 12);
+    const document = parse(reflowText([
+      anchor, item('and the ordinary first line continues', 75, 144, 225, 12),
+      item('beside the original capital on the next line', 55, 126, 245, 12),
+      item('before returning to the full text margin.', 20, 108, 230, 12),
+    ], 'en', new Set(), { inlineImages: [{ item: anchor, replace: [], src: 'images/word.png', alt: '', aspect: 2.5, hangingUntil: 120 }] }));
+    expect(document.querySelectorAll('p')).toHaveLength(1);
+    expect(document.querySelector('p img')).not.toBeNull();
+    expect(document.textContent).toContain('first line continues beside the original capital');
+  });
+
+  it('keeps the actual word space after a complete inline source word even when OCR boxes touch', () => {
+    const anchor = item('\ufffc ', 20, 100, 47, 12);
+    const html = reflowText([anchor, item('they continued in ordinary text.', 67, 100, 200, 12)], 'en', new Set(), {
+      inlineImages: [{ item: anchor, replace: [], src: 'images/word.png', alt: '', aspect: 2.5 }],
+    });
+    expect(html).toMatch(/\/> they continued/);
+    expect(parse(html).querySelector('img')?.nextSibling?.textContent).toBe(' they continued in ordinary text.');
+  });
+
+  it('joins consecutive lines at a stable inset quotation margin without flattening the surrounding paragraphs', () => {
+    const body = parse(reflow([
+      item('Ordinary prose has its own column margin.', 20, 260, 260, 10.7),
+      item('The preceding paragraph ends.', 20, 244, 160, 10.7),
+      item('The quoted paragraph contains a word split mak-', 68, 212, 215, 10.7),
+      item('ing a continuous quotation across several lines', 68, 196, 215, 10.7),
+      item('and keeping the following prose separate.', 68, 180, 195, 10.7),
+      item('Another normal paragraph starts here', 32, 148, 248, 10.7),
+      item('and finishes normally.', 20, 132, 120, 10.7),
+    ]));
+    expect(Array.from(body.querySelectorAll('p')).map(p => p.textContent)).toEqual([
+      'Ordinary prose has its own column margin. The preceding paragraph ends.',
+      'The quoted paragraph contains a word split making a continuous quotation across several lines and keeping the following prose separate.',
+      'Another normal paragraph starts here and finishes normally.',
+    ]);
+  });
+
+  it('keeps an obvious lowercase hyphen continuation together despite a noisy OCR font-height estimate', () => {
+    const body = parse(reflow([
+      item('A complete paragraph at the normal body size.', 20, 240, 260, 10.7),
+      item('A new paragraph becomes almost unbear-', 32, 212, 248, 10.7),
+      item('able because its OCR row height is inaccurate.', 20, 196, 245, 14.4),
+      item('It continues with ordinary body type', 20, 180, 260, 10.7),
+      item('until the paragraph ends.', 20, 164, 140, 10.7),
+    ]));
+    expect(body.querySelector('h2')).toBeNull();
+    expect(Array.from(body.querySelectorAll('p')).map(p => p.textContent)).toEqual([
+      'A complete paragraph at the normal body size.',
+      'A new paragraph becomes almost unbearable because its OCR row height is inaccurate. It continues with ordinary body type until the paragraph ends.',
+    ]);
   });
 });
 

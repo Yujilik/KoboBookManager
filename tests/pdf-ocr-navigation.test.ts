@@ -74,3 +74,41 @@ it('uses the supplied book language when package metadata is not written yet and
   const result = await improveOcrNavigation(zip, 'ja');
   expect(result?.chapters.slice(1).map(chapter => chapter.title)).toEqual(['第1週', '第2週', '第3週']);
 });
+
+it('separates a one-off introductory mention from dense running headers and links the coherent contents rows', async () => {
+  const zip = new JSZip(), titles = ['A forest beside the northern river', 'A journey through the southern hills', 'A market beyond the eastern village', 'A garden above the western valley'];
+  zip.file('OEBPS/book.opf', '<package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/"><metadata><dc:language>ja</dc:language></metadata></package>');
+  for (let n = 1; n <= 80; n++) {
+    const cover = [15, 31, 47, 63].indexOf(n), section = Math.floor((n - 16) / 16);
+    const text = n === 3 ? '<p>第1週 はじめに — an introductory explanation of how the first week works.</p>'
+      : n === 6 ? titles.map((title, i) => `<p>${i === 3 ? 'A garden aboe the wesn vally' : `第${i + 1}週 ${title}`}</p>`).join('')
+      : n === 7 ? '<p>A general study explanation mentions the final 第4週 in a sentence, rather than a single contents entry.</p>'
+      : cover >= 0 ? `<p>${titles[cover]}</p>`
+      : n >= 16 && section >= 0 && section < 4 ? `<p>${longText}</p><p>第${section + 1}週</p>`
+      : '<p>General introduction and publication details.</p>';
+    zip.file(`OEBPS/page-${n}.xhtml`, `<html xmlns="http://www.w3.org/1999/xhtml" lang="ja"><body id="pdf-page-${n}">${text}</body></html>`);
+  }
+  const result = await improveOcrNavigation(zip, 'ja');
+  expect(result?.chapters.map(chapter => chapter.href)).toEqual([15, 31, 47, 63].map(n => `page-${n}.xhtml#pdf-page-${n}`));
+  expect(result?.linksAdded).toBe(4);
+  const contents = new DOMParser().parseFromString(await zip.file('OEBPS/page-6.xhtml')!.async('string'), 'application/xhtml+xml');
+  expect(Array.from(contents.querySelectorAll('a')).map(a => a.getAttribute('href'))).toEqual([15, 31, 47, 63].map(n => `page-${n}.xhtml#pdf-page-${n}`));
+  expect(await zip.file('OEBPS/page-3.xhtml')!.async('string')).not.toContain('<a ');
+});
+
+it('matches a readable title script when OCR merges it with long unrelated translation noise', async () => {
+  const zip = await workbook('ja', n => `第${n}週`);
+  zip.file('OEBPS/page-3.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml" lang="ja"><body id="pdf-page-3"><p>ゆっくり散歩を楽しみましょう① BERASD QWERASD ftyjfasd BERASD QWERASD ftyjfasd BERASD QWERASD ftyjfasd</p></body></html>');
+  zip.file('OEBPS/page-2.xhtml', '<html xmlns="http://www.w3.org/1999/xhtml"><body><p>ゆっくり散歩を楽しみましょ①</p><p>第2週 A journey beside the southern lake</p><p>第3週 An arrival in the western valley</p></body></html>');
+  const result = await improveOcrNavigation(zip, 'ja'); expect(result?.linksAdded).toBe(3);
+  const doc = new DOMParser().parseFromString(await zip.file('OEBPS/page-2.xhtml')!.async('string'), 'application/xhtml+xml');
+  expect(doc.querySelector('a')?.getAttribute('href')).toBe('page-3.xhtml#pdf-page-3');
+});
+
+it.each(['pdf-destination-9', 'pdf-page-1'])('keeps a named Chinese preface with a %s bookmark destination', async fragment => {
+  const zip = await workbook('ja', n => `第${n}週`);
+  zip.file('OEBPS/nav.xhtml', `<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><body><nav epub:type="toc"><ol><li><a href="page-1.xhtml#${fragment}">前言</a></li><li><a href="page-2.xhtml#pdf-page-2">Random OCR noise</a></li></ol></nav></body></html>`);
+  const result = await improveOcrNavigation(zip, 'ja');
+  expect(result?.chapters[0]).toEqual({ title: '前言', href: `page-1.xhtml#${fragment}`, children: [] });
+  expect(result?.chapters.some(chapter => chapter.title === 'Random OCR noise')).toBe(false);
+});

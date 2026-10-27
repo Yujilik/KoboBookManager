@@ -1,6 +1,6 @@
 export const PDF_OCR_LANGUAGES = ['eng', 'jpn', 'chi_sim', 'chi_tra', 'kor', 'tha', 'rus', 'por', 'spa'] as const;
 export type PdfOcrLanguage = typeof PDF_OCR_LANGUAGES[number];
-export interface PdfConversionOptions { ocrLanguages?: PdfOcrLanguage[] }
+export interface PdfConversionOptions { ocrLanguages?: PdfOcrLanguage[]; ocrAutomatic?: boolean }
 export const ocrLanguageNames: Record<PdfOcrLanguage, string> = {
   eng: 'English', jpn: '日本語', chi_sim: '简体中文', chi_tra: '繁體中文',
   kor: '한국어', tha: 'ไทย', rus: 'Русский', por: 'Português', spa: 'Español',

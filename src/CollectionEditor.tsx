@@ -53,8 +53,8 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
     if (pdfBooks.length && format !== 'original') {
       if (!ocrReadyFor(format)) return;
       const options: ExportOptions = collection
-        ? { pdfByBook: Object.fromEntries(pdfBooks.map(source => [source.id, { ocrLanguages: [...recognitionLanguages(source)] }])) }
-        : { ocrLanguages: [...ocrLanguages] };
+        ? { pdfByBook: Object.fromEntries(pdfBooks.map(source => [source.id, { ocrLanguages: [...recognitionLanguages(source)], ocrAutomatic: ocrChoices[source.id] === undefined }])) }
+        : { ocrLanguages: [...ocrLanguages], ocrAutomatic: ocrChoices[book.id] === undefined };
       onExport(next, format, !!send, options);
     } else if (send === undefined) onExport(next, format);
     else onExport(next, format, send);

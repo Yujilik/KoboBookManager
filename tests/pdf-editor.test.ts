@@ -46,10 +46,10 @@ it.each([
   await act(async () => { select.value = format; select.dispatchEvent(new Event('change', { bubbles: true })); });
   await act(async () => button(save).click());
   if (format === 'original') expect(onExport).toHaveBeenLastCalledWith([book], format);
-  else expect(onExport).toHaveBeenLastCalledWith([book], format, false, { ocrLanguages: defaultOcrLanguages(book) });
+  else expect(onExport).toHaveBeenLastCalledWith([book], format, false, { ocrLanguages: defaultOcrLanguages(book), ocrAutomatic: true });
   await act(async () => button(send).click());
   if (format === 'original') expect(onExport).toHaveBeenLastCalledWith([book], format, true);
-  else expect(onExport).toHaveBeenLastCalledWith([book], format, true, { ocrLanguages: defaultOcrLanguages(book) });
+  else expect(onExport).toHaveBeenLastCalledWith([book], format, true, { ocrLanguages: defaultOcrLanguages(book), ocrAutomatic: true });
 });
 
 function recognitionInputs() { return [...container.querySelectorAll<HTMLInputElement>('.ocr-languages input')]; }
@@ -73,9 +73,9 @@ it('offers offline OCR languages and forwards a mixed-language selection for sav
   await selectRecognitionLanguages(['eng', 'jpn', 'tha']);
   expect(button('Save details').disabled).toBe(true);
   await act(async () => button('Convert and save KEPUB').click());
-  expect(onExport).toHaveBeenLastCalledWith([source], 'kepub', false, { ocrLanguages: ['eng', 'jpn', 'tha'] });
+  expect(onExport).toHaveBeenLastCalledWith([source], 'kepub', false, { ocrLanguages: ['eng', 'jpn', 'tha'], ocrAutomatic: false });
   await act(async () => button('Convert to KEPUB & send to Kobo').click());
-  expect(onExport).toHaveBeenLastCalledWith([source], 'kepub', true, { ocrLanguages: ['eng', 'jpn', 'tha'] });
+  expect(onExport).toHaveBeenLastCalledWith([source], 'kepub', true, { ocrLanguages: ['eng', 'jpn', 'tha'], ocrAutomatic: false });
   expect(source.language).toBe('ja');
   expect(container.querySelector('.info-note')?.textContent).not.toContain('Save changes');
 });
@@ -126,7 +126,7 @@ it('keeps each PDF recognition selection when exporting a collection with an EPU
   await selectRecognitionLanguages(['tha']);
   await act(async () => container.querySelectorAll<HTMLButtonElement>('.collection-item')[2].click());
   expect(container.querySelector('.ocr-options')).toBeNull();
-  const options = { pdfByBook: { japanese: { ocrLanguages: ['eng', 'jpn'] }, thai: { ocrLanguages: ['tha'] } } };
+  const options = { pdfByBook: { japanese: { ocrLanguages: ['eng', 'jpn'], ocrAutomatic: false }, thai: { ocrLanguages: ['tha'], ocrAutomatic: false } } };
   await act(async () => button('Convert collection to KEPUB ZIP').click());
   expect(onExport).toHaveBeenLastCalledWith(sources, 'kepub', false, options);
   await act(async () => button('Convert to KEPUB & send to Kobo').click());
@@ -139,7 +139,7 @@ it('uses each unmodified PDF default rather than applying the active PDF languag
   await mount([japanese, thai]);
   await act(async () => button('Convert and save KEPUB').click());
   expect(onExport).toHaveBeenCalledWith([japanese, thai], 'kepub', false, {
-    pdfByBook: { japanese: { ocrLanguages: defaultOcrLanguages(japanese) }, thai: { ocrLanguages: defaultOcrLanguages(thai) } },
+    pdfByBook: { japanese: { ocrLanguages: defaultOcrLanguages(japanese), ocrAutomatic: true }, thai: { ocrLanguages: defaultOcrLanguages(thai), ocrAutomatic: true } },
   });
 });
 

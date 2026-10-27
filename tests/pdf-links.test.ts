@@ -17,6 +17,7 @@ vi.mock('../src/pdf-ocr', () => ({ createPdfOcr: vi.fn(async () => ({
 const dom = new JSDOM();
 beforeAll(() => {
   vi.stubGlobal('DOMParser', dom.window.DOMParser);
+  vi.stubGlobal('XMLSerializer', dom.window.XMLSerializer);
   vi.stubGlobal('document', { createElement: () => {
     const canvas = createCanvas(1, 1);
     return Object.assign(canvas, { toBlob: (callback: (value: Blob) => void, mime = 'image/jpeg') => callback(new Blob([new Uint8Array(mime === 'image/png' ? canvas.encodeSync('png') : canvas.encodeSync('jpeg', 94))], { type: mime })) });
@@ -70,25 +71,32 @@ it('preserves clickable body links, named/coordinate destinations and chapter hi
     expect(main.textContent).toContain('Chapter Two');
     expect(main.querySelectorAll('li ol li a')).not.toHaveLength(0);
     expect(main.textContent).toContain('Lower section');
-    const chapterOne = await document('page-2.xhtml');
+    const firstChapterLink = Array.from(main.querySelectorAll('a')).find(a => a.textContent === 'Chapter One & notes')!;
+    expect(firstChapterLink).toBeDefined();
+    const chapterOneUrl = new URL(firstChapterLink.getAttribute('href')!, 'https://book.test/OEBPS/nav.xhtml');
+    const chapterOneFile = decodeURIComponent(chapterOneUrl.pathname.slice('/OEBPS/'.length));
+    const chapterOne = await document(chapterOneFile);
+    expect(chapterOne.getElementById('pdf-page-2')).not.toBeNull();
     expect(chapterOne.querySelector('a[href="https://example.org/read?one=1&two=2"]')?.textContent).toBe('Visit website');
     expect(chapterOne.querySelector('a[href="https://example.org/figure"]')?.textContent).toBe('https://example.org/figure');
     const lowerLink = Array.from(chapterOne.querySelectorAll('a')).find(link => link.textContent?.includes('Read lower section'))!;
     expect(lowerLink).toBeDefined();
     const [lowerFile, lowerId] = lowerLink.getAttribute('href')!.split('#');
-    expect(lowerFile === '' || lowerFile === 'page-2.xhtml').toBe(true);
-    expect(chapterOne.getElementById(lowerId)?.textContent).toContain('Lower section destination');
-    for (const page of ['page-1.xhtml', 'page-2.xhtml', 'page-3.xhtml', 'nav.xhtml']) {
+    expect(lowerFile === '' || lowerFile === chapterOneFile).toBe(true);
+    expect(chapterOne.getElementById(decodeURIComponent(lowerId))?.textContent).toContain('Lower section destination');
+    const readingFiles = Object.keys(zip.files).filter(name => name.startsWith('OEBPS/') && name.endsWith('.xhtml')).map(name => name.slice('OEBPS/'.length));
+    for (const page of readingFiles) {
       const source = await document(page);
       expect(source.querySelector('a a')).toBeNull();
       for (const link of Array.from(source.querySelectorAll('a'))) {
         const href = link.getAttribute('href')!;
         expect(href).not.toMatch(/javascript:|data:|file:/i);
         if (/^https?:/.test(href)) continue;
-        const [file, id] = href.split('#');
-        const target = await document(file || page);
-        expect(id, href).toBeTruthy();
-        expect(target.getElementById(id), href).not.toBeNull();
+        const location = new URL(href, 'https://book.test/OEBPS/' + page);
+        const targetFile = decodeURIComponent(location.pathname.slice('/OEBPS/'.length));
+        const target = await document(targetFile);
+        expect(location.hash, href).toBeTruthy();
+        expect(target.getElementById(decodeURIComponent(location.hash.slice(1))), href).not.toBeNull();
       }
     }
     const ncx = await document('toc.ncx');

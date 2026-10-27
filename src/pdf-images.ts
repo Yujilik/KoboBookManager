@@ -14,6 +14,7 @@ export interface PdfFigure {
   mime: 'image/png' | 'image/jpeg';
   width: number;
   height: number;
+  beforeText?: boolean;
 }
 export interface PdfImageOptions { omitPageBackground?: boolean }
 type Matrix = [number, number, number, number, number, number];

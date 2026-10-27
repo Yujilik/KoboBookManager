@@ -1,11 +1,13 @@
 import { createWorker, OEM, PSM, type Worker, type Page, type Bbox } from 'tesseract.js';
 import { PDF_OCR_LANGUAGES, type PdfOcrLanguage } from './pdf-ocr-options';
+import { ocrFigures } from './pdf-ocr-figures';
 
 export interface PdfOcrWord { text: string; confidence: number; bbox: Bbox }
-export interface PdfOcrLine extends PdfOcrWord { words: PdfOcrWord[] }
+export interface PdfOcrLine extends PdfOcrWord { words: PdfOcrWord[]; baseline?: Bbox; height?: number }
+export interface PdfOcrOptions { mode?: 'page' | 'line' | 'character'; characters?: string }
 export interface PdfOcrResult { text: string; confidence: number; lines: PdfOcrLine[]; figures?: { bbox: Bbox }[] }
 export interface PdfOcr {
-  recognize(canvas: HTMLCanvasElement): Promise<PdfOcrResult>;
+  recognize(canvas: HTMLCanvasElement, options?: PdfOcrOptions): Promise<PdfOcrResult>;
   close(): Promise<void>;
 }
 const TIMEOUT = 120_000;
@@ -19,11 +21,8 @@ function bounds(value: Bbox | undefined, width: number, height: number): Bbox | 
 }
 
 function result(data: Page, width: number, height: number): PdfOcrResult {
-  const lines: PdfOcrLine[] = [], figures: { bbox: Bbox }[] = [];
+  const lines: PdfOcrLine[] = [], figures = ocrFigures(data, width, height);
   for (const block of data.blocks ?? []) {
-    const image = !block.text?.trim() && /^(?:(?:FLOWING|HEADING|PULLOUT)_)?IMAGE$/i.test(block.blocktype || '');
-    const box = image && bounds(block.bbox, width, height);
-    if (box) figures.push({ bbox: box });
     for (const paragraph of block.paragraphs ?? []) for (const line of paragraph.lines ?? []) {
       const text = line.text?.trim(), bbox = bounds(line.bbox, width, height);
       if (!text || !bbox) continue;
@@ -32,7 +31,10 @@ function result(data: Page, width: number, height: number): PdfOcrResult {
         const wordBox = bounds(word.bbox, width, height), wordText = word.text?.trim();
         if (wordText && wordBox) words.push({ text: wordText, confidence: confidence(word.confidence), bbox: wordBox });
       }
-      lines.push({ text, confidence: confidence(line.confidence), bbox, words });
+      const baseline = line.baseline && Object.values(line.baseline).every(Number.isFinite) ? line.baseline : undefined;
+      const rowHeight = line.rowAttributes?.rowHeight;
+      lines.push({ text, confidence: confidence(line.confidence), bbox, words,
+        ...(baseline ? { baseline } : {}), ...(Number.isFinite(rowHeight) && rowHeight > 0 ? { height: rowHeight } : {}) });
     }
   }
   const text = data.text?.trim() || '';
@@ -90,7 +92,7 @@ export async function createPdfOcr(languages: PdfOcrLanguage[], onProgress?: (va
     await guarded(worker.setParameters({ tessedit_pageseg_mode: PSM.AUTO, user_defined_dpi: '300' }));
   } catch (error) { await close(); throw failure(error); }
   return {
-    async recognize(canvas) {
+    async recognize(canvas, settings = {}) {
       if (closed || busy) throw failure(closed ? 'OCR worker closed' : 'OCR already in progress');
       if (!Number.isSafeInteger(canvas.width) || !Number.isSafeInteger(canvas.height) || canvas.width <= 0 || canvas.height <= 0 || canvas.width * canvas.height > 12_000_000) throw failure('Invalid OCR canvas');
       busy = true;
@@ -102,7 +104,11 @@ export async function createPdfOcr(languages: PdfOcrLanguage[], onProgress?: (va
           // Both browser and Node Tesseract adapters accept encoded image bytes;
           // passing them directly avoids base64 copies and FileReader dependence.
           const input = bytes as unknown as Parameters<Worker['recognize']>[0];
-          return worker!.recognize(input, {}, { text: true, blocks: true });
+          // Region retries share the worker, and restore page segmentation and
+          // character sets for the next page instead of leaking retry settings.
+          await worker!.setParameters({ tessedit_pageseg_mode: settings.mode === 'character' ? PSM.SINGLE_CHAR : settings.mode === 'line' ? PSM.SINGLE_LINE : PSM.AUTO,
+            tessedit_char_whitelist: settings.characters || '' });
+          return worker!.recognize(input, {}, { text: true, blocks: true, hocr: !settings.mode || settings.mode === 'page' });
         })();
         const recognized = await guarded(operation);
         if (closed) throw failure('OCR worker closed');

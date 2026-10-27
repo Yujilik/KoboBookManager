@@ -18,7 +18,8 @@ type ConversionProgress = (value: number, stage?: 'ocr') => void;
 function pdfOptions(book: Book, options?: ExportOptions): PdfConversionOptions | undefined {
   if (book.format !== 'pdf') return;
   if (!options?.pdfByBook) return options;
-  return options.pdfByBook[book.id] ?? (options.ocrLanguages ? { ocrLanguages: options.ocrLanguages } : undefined);
+  return options.pdfByBook[book.id] ?? (options.ocrLanguages || options.ocrAutomatic !== undefined
+    ? { ...(options.ocrLanguages ? { ocrLanguages: options.ocrLanguages } : {}), ...(options.ocrAutomatic !== undefined ? { ocrAutomatic: options.ocrAutomatic } : {}) } : undefined);
 }
 
 export function filename(book: Book, format: ExportFormat = 'original') {

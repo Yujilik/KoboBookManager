@@ -6,6 +6,7 @@ import { createPdfTextSource } from '../src/pdf-text';
 import { createPdfOcr, type PdfOcr, type PdfOcrResult } from '../src/pdf-ocr';
 import { emptyMetadata } from '../src/epub';
 import { reflowText } from '../src/pdf-reflow';
+import * as initialWords from '../src/pdf-ocr-initials';
 
 vi.mock('../src/pdf-ocr', () => ({ createPdfOcr: vi.fn() }));
 const content = (str = ''): TextContent => ({ items: str ? [{ str, dir: 'ltr', width: str.length * 6, height: 12, transform: [12, 0, 0, 12, 20, 500], fontName: 'existing-font', hasEOL: true } as TextItem] : [], styles: {}, lang: null });
@@ -98,6 +99,61 @@ describe('PDF text extraction and offline recognition selection', () => {
     const source = await createPdfTextSource(document([short]), emptyMetadata('Short text'), {}, vi.fn());
     expect(await source.read(short, 1)).toBe(await short.getTextContent());
     expect(short.render).not.toHaveBeenCalled(); expect(createPdfOcr).not.toHaveBeenCalled();
+    await source.close();
+  });
+
+  it('restores non-chapter text in place when authoritative navigation rejects an inferred initial image', async () => {
+    const initial = vi.spyOn(initialWords, 'originalInitialWords').mockImplementation(async (_canvas, result) => {
+      const anchor = result.lines[0].words[0]; anchor.text = '\ufffc'; result.lines[0].text = '\ufffc';
+      return [{ bytes: new Uint8Array([137, 80, 78, 71]), width: 10, height: 10, anchor, bottom: 120 }];
+    });
+    worker.recognize.mockImplementation(async () => recognized());
+    const pages = [page(), page()], source = await createPdfTextSource(document(pages), emptyMetadata('Chapters'), {}, vi.fn());
+    try {
+      const first = await source.read(pages[0], 1), second = await source.read(pages[1], 2), firstItems = first.items;
+      expect(source.inlineFigures(1)).toHaveLength(1); expect(source.inlineFigures(2)).toHaveLength(1);
+      source.restrictInitials(new Set([2]));
+      expect(first.items).toBe(firstItems);
+      expect(first.items[0]).toMatchObject({ str: recognized().text });
+      expect(source.inlineFigures(1)).toEqual([]);
+      expect(source.inlineFigures(2)[0].item).toBe(second.items[0]);
+      expect(await source.read(pages[0], 1)).toBe(first);
+      expect(worker.recognize).toHaveBeenCalledTimes(2);
+    } finally { initial.mockRestore(); await source.close(); }
+  });
+
+  it('refreshes suspicious Unicode-valid inherited OCR over a scanned page', async () => {
+    const bad = 'For a friend wHO enjoys STORIES, followed by enough readable text.';
+    const scan = page(bad);
+    scan.getOperatorList.mockResolvedValue({ fnArray: [OPS.transform, OPS.paintImageXObject, OPS.setTextRenderingMode, OPS.showText], argsArray: [[400, 0, 0, 600, 0, 0], ['scan'], [3], [[{ unicode: bad }]]], lastChunk: true });
+    const source = await createPdfTextSource(document([scan]), emptyMetadata('Searchable scan'), {}, vi.fn());
+    const result = await source.read(scan, 1);
+    expect(result.items[0]).toMatchObject({ str: recognized().text });
+    expect(source.recognized(1)).toBe(true);
+    expect(source.facsimile(1)).toBe(false);
+    await source.close();
+  });
+
+  it('does not reinterpret ordinary visible digital text solely because it contains mixed-case identifiers', async () => {
+    const code = page('The identifier itemURL belongs to a normal digital programming book.', { raster: false });
+    const source = await createPdfTextSource(document([code]), emptyMetadata('Digital text'), {}, vi.fn());
+    expect(await source.read(code, 1)).toBe(await code.getTextContent());
+    expect(createPdfOcr).not.toHaveBeenCalled();
+    await source.close();
+  });
+
+  it.each([false, true])('uses source language hints only for automatic OCR choices (automatic: %s)', async automatic => {
+    const bad = 'For a friend wHO enjoys STORIES, followed by enough readable text.';
+    const pages = Array.from({ length: 3 }, () => page(bad));
+    for (const scan of pages) {
+      scan.getTextContent.mockResolvedValue({ ...content(bad), lang: 'eng' });
+      scan.getOperatorList.mockResolvedValue({ fnArray: [OPS.transform, OPS.paintImageXObject, OPS.setTextRenderingMode, OPS.showText], argsArray: [[400, 0, 0, 600, 0, 0], ['scan'], [3], [[{ unicode: bad }]]], lastChunk: true });
+    }
+    const choices = ['eng', 'jpn', 'chi_sim', 'chi_tra', 'kor', 'tha', 'rus', 'por', 'spa'] as const;
+    const source = await createPdfTextSource(document(pages), emptyMetadata('Unknown metadata'), { ocrLanguages: [...choices], ocrAutomatic: automatic }, vi.fn());
+    const result = await source.read(pages[0], 1);
+    expect(createPdfOcr).toHaveBeenCalledWith(automatic ? ['eng'] : [...choices], expect.any(Function));
+    expect(result.lang).toBe('en');
     await source.close();
   });
 

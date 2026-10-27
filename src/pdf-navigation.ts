@@ -3,7 +3,7 @@ import type { TextContent, TextItem } from 'pdfjs-dist/types/src/display/api';
 import type { ReflowLink, ReflowTarget } from './pdf-reflow';
 
 export interface NavigationEntry { title: string; href: string; children: NavigationEntry[] }
-export interface PdfPageNavigation { links: ReflowLink[]; targets: ReflowTarget[]; title?: string; heading?: string }
+export interface PdfPageNavigation { links: ReflowLink[]; targets: ReflowTarget[]; title?: string; heading?: string; chapter?: string }
 export interface PdfNavigation {
   chapters: NavigationEntry[];
   origin: 'printed' | 'outline' | 'headings';
@@ -236,6 +236,7 @@ export async function buildPdfNavigation(document: PDFDocumentProxy, options: { 
   // layer's decorative chapter header. Keep that chapter name visible at the
   // same destination instead of making the reader land on unreadable OCR noise.
   for (const chapter of printedRoots) {
+    pages.get(chapter.page)!.chapter = chapter.title;
     const title = key(chapter.title);
     const opening = (pageLines.get(chapter.page) || []).slice(0, 12).map(line => key(line.text));
     // A title mentioned in a paragraph does not repair an unreadable OCR heading.

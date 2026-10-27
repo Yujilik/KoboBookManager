@@ -12,6 +12,7 @@ import { extractPageImages, hasOcrTextLayer } from './pdf-images';
 import { buildPdfNavigation, type NavigationEntry } from './pdf-navigation';
 import { createPdfTextSource, type PdfTextSource } from './pdf-text';
 import { createOriginalPage } from './pdf-originals';
+import { chapterHeading, readingItems, repeatedFurniture } from './pdf-reading';
 import type { PdfConversionOptions } from './pdf-ocr-options';
 
 const browser = typeof window !== 'undefined';
@@ -94,11 +95,30 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
     // have individual timeouts instead of the text-loader's three-minute limit.
     clearTimeout(timeout);
     const navigation = await buildPdfNavigation(document, { readText: textSource.read });
+    const initialPages = new Set<number>();
+    const collectInitialPages = (entries: NavigationEntry[]) => {
+      for (const entry of entries) {
+        const number = entry.href.match(/^page-(\d+)\.xhtml(?:#|$)/)?.[1];
+        const explicitHeading = /^(?:chapter|part|cap[ií]tulo|chapitre|kapitel|глава|第.{1,10}[章部節回]|제.{1,10}[장부절]|บทที่)/iu.test(entry.title);
+        if (number && (navigation.origin !== 'headings' || explicitHeading)) initialPages.add(Number(number));
+        if (entry.children) collectInitialPages(entry.children);
+      }
+    };
+    collectInitialPages(navigation.chapters);
+    textSource.restrictInitials(initialPages);
     textSource.verify();
+    const furniturePages = [];
+    if (navigation.origin !== 'headings' && textSource.usesOcr) {
+      for (let number = 1; number <= document.numPages; number++) {
+        const page = await document.getPage(number), text = navigation.text(number);
+        furniturePages.push({ number, items: (text?.items || []).filter((item): item is TextItem => 'str' in item), view: page.view, scanned: true });
+      }
+    }
+    const furniture = repeatedFurniture(furniturePages);
     const zip = new JSZip();
     zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
     zip.file('META-INF/container.xml', '<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/book.opf" media-type="application/oebps-package+xml"/></rootfiles></container>');
-    zip.file('OEBPS/style.css', 'body{overflow-wrap:break-word}p{text-indent:1.2em;margin:.35em 0}h2{margin:1em 0 .6em}figure{margin:1em 0;text-align:center}img{max-width:100%;height:auto}rt{font-size:.5em}');
+    zip.file('OEBPS/style.css', 'body{overflow-wrap:break-word}p{text-indent:1.2em;margin:.35em 0}h2{margin:1em 0 .6em}figure{margin:1em 0;text-align:center}img{max-width:100%;height:auto}.pdf-facsimile{margin:0;break-inside:avoid}.pdf-facsimile img{width:100%;height:auto}rt{font-size:.5em}');
     const manifest = ['<item id="style" href="style.css" media-type="text/css"/>', '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>', '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'];
     const spine: string[] = [], originalSpine: string[] = [], pageNavigation: string[] = [];
     const languages = new Set<string>();
@@ -118,17 +138,30 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
       const page = await document.getPage(number);
       try {
         const text = navigation.text(number) || await page.getTextContent({ disableNormalization: true });
-        const items: TextItem[] = [];
-        for (const item of text.items) if ('str' in item) items.push(item);
-        const operations = textSource.recognized(number) ? undefined : await page.getOperatorList();
+        const sourceItems = text.items.filter((item): item is TextItem => 'str' in item);
+        const facsimile = textSource.facsimile(number);
+        const operations = textSource.recognized(number) || facsimile ? undefined : await page.getOperatorList();
+        const ocrTextLayer = operations ? hasOcrTextLayer(operations) : false;
+        const items = readingItems(sourceItems, page.view, textSource.recognized(number) || ocrTextLayer, furniture.get(number));
         if (items.some(item => /[\uFFFD\p{Private_Use}\p{Surrogate}\u0000-\u0008\u000b\u000c\u000e-\u001f]/u.test(item.str))) {
           throw new Error('pdfTextUnreliable', { cause: new Error(`Unreadable text on PDF page ${number}`) });
         }
         const declaredLanguage = languageTag(details.language || text.lang || sourceLanguage);
         const pageLanguage = declaredLanguage === 'und' ? textLanguage(items.map(item => item.str).join(''), 'und') : declaredLanguage;
         const pageNavigationInfo = navigation.page(number);
-        let content = reflowText(items, pageLanguage, languages, pageNavigationInfo);
-        if (pageNavigationInfo.heading) content = `<h2>${xml(pageNavigationInfo.heading)}</h2>${content}`;
+        const inlineImages = [];
+        for (const [index, initial] of textSource.inlineFigures(number).entries()) {
+          const href = `images/initial-${number}-${index + 1}.png`;
+          expanded += initial.bytes.byteLength;
+          if (expanded > MAX_BOOK_SIZE) throw new Error('pdfConversionTooLarge');
+          zip.file(`OEBPS/${href}`, initial.bytes, { compression: 'STORE' });
+          manifest.push(`<item id="initial-${number}-${index + 1}" href="${href}" media-type="image/png"/>`);
+          inlineImages.push({ item: initial.item, replace: initial.replace, src: href, alt: initial.alt, aspect: initial.width / initial.height,
+            ...(initial.hangingUntil !== undefined ? { hangingUntil: initial.hangingUntil } : {}) });
+        }
+        let content = reflowText(items, pageLanguage, languages, { ...pageNavigationInfo, inlineImages, ocr: textSource.recognized(number) || ocrTextLayer });
+        const canonicalTitle = pageNavigationInfo.chapter || pageNavigationInfo.heading;
+        if (canonicalTitle && !facsimile) content = chapterHeading(content, canonicalTitle);
         const pageTextCharacters = items.reduce((count, item) => count + item.str.replace(/\s/g, '').length, 0);
         textCharacters += pageTextCharacters;
         if (content) {
@@ -144,10 +177,10 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
           zip.file('OEBPS/images/page-1.jpg', image, { compression: 'STORE' });
           manifest.push('<item id="image-1" href="images/page-1.jpg" media-type="image/jpeg" properties="cover-image"/>');
         }
-        const ocrTextLayer = operations ? hasOcrTextLayer(operations) : false;
         const images = operations
           ? await extractPageImages(page, operations, { omitPageBackground: ocrTextLayer })
           : textSource.figures(number);
+        const leadingFigures: string[] = [];
         for (let index = 0; index < images.length; index++) {
           const image = images[index];
           expanded += image.bytes.byteLength;
@@ -155,19 +188,21 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
           const href = `images/figure-${number}-${index + 1}.${image.mime === 'image/png' ? 'png' : 'jpg'}`;
           zip.file(`OEBPS/${href}`, image.bytes, { compression: 'STORE' });
           manifest.push(`<item id="figure-${number}-${index + 1}" href="${href}" media-type="${image.mime}"/>`);
-          content += `<figure><img src="${href}" alt="${xml(metadata.title)} — ${number}"/></figure>`;
+          const figure = `<figure><img src="${href}" alt="${xml(metadata.title)} — ${number}"/></figure>`;
+          if (image.beforeText) leadingFigures.push(figure); else content += figure;
         }
+        content = leadingFigures.join('') + content;
         // Vector-only artwork can still be kept on genuine picture pages. A
         // mixed text/drawing page always keeps its body as selectable text.
         if (!images.length && !pageTextCharacters && !textSource.recognized(number)) {
-          if (number === 1 && !cover) content += `<figure><img src="images/page-1.jpg" alt="${xml(metadata.title)}"/></figure>`;
+          if (number === 1 && !cover) content += `<figure${facsimile ? ' class="pdf-facsimile"' : ''}><img src="images/page-1.jpg" alt="${xml(metadata.title)}"/></figure>`;
           else {
             const image = await pageImage(page);
             expanded += image.byteLength;
             if (expanded > MAX_BOOK_SIZE) throw new Error('pdfConversionTooLarge');
             zip.file(`OEBPS/images/page-${number}.jpg`, image, { compression: 'STORE' });
             manifest.push(`<item id="image-${number}" href="images/page-${number}.jpg" media-type="image/jpeg"/>`);
-            content += `<figure><img src="images/page-${number}.jpg" alt="${xml(metadata.title)} — ${number}"/></figure>`;
+            content += `<figure${facsimile ? ' class="pdf-facsimile"' : ''}><img src="images/page-${number}.jpg" alt="${xml(metadata.title)} — ${number}"/></figure>`;
           }
         }
         // A PDF link can cover an illustration or a drawing instead of text.
@@ -208,6 +243,7 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
     const modified = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
     let chapters = navigation.chapters;
     if (textSource.usesOcr && navigation.origin === 'headings') {
+      writePdfNavigation(zip, chapters, metadata, identifier, pageNavigation.join(''));
       const { improveOcrNavigation } = await import('./pdf-ocr-navigation');
       const improved = await improveOcrNavigation(zip, metadata.language);
       if (improved) chapters = improved.chapters;
@@ -221,6 +257,10 @@ export async function pdfToEpub(bytes: Uint8Array, details: Metadata, progress: 
     const series = xml(metadata.series).trim();
     const seriesMetadata = series ? `<meta name="calibre:series" content="${series}"/><meta name="calibre:series_index" content="${xml(metadata.seriesIndex).trim() || '1'}"/>` : '';
     zip.file('OEBPS/book.opf', `<?xml version="1.0" encoding="utf-8"?><package xmlns="http://www.idpf.org/2007/opf" xmlns:dc="http://purl.org/dc/elements/1.1/" version="3.0" unique-identifier="uid"><metadata><dc:identifier id="uid">${identifier}</dc:identifier><dc:title>${xml(metadata.title)}</dc:title>${languageMetadata}${optionalMetadata}${seriesMetadata}<meta property="dcterms:modified">${modified}</meta><meta name="cover" content="${coverId}"/></metadata><manifest>${manifest.join('')}</manifest><spine toc="ncx">${spine.join('')}${originalSpine.join('')}</spine></package>`);
+    if (chapters.length >= 2) {
+      const { assemblePdfChapters } = await import('./pdf-chapters');
+      chapters = await assemblePdfChapters(zip, chapters);
+    }
     const output = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 6 } });
     if (output.byteLength > MAX_BOOK_SIZE) throw new Error('pdfConversionTooLarge');
     progress(100);

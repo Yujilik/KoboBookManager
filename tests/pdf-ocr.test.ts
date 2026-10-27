@@ -4,7 +4,7 @@ import { createWorker, type Worker } from 'tesseract.js';
 import { createPdfOcr } from '../src/pdf-ocr';
 import type { PdfOcrLanguage } from '../src/pdf-ocr-options';
 
-vi.mock('tesseract.js', () => ({ createWorker: vi.fn(), OEM: { LSTM_ONLY: 1 }, PSM: { AUTO: '3' } }));
+vi.mock('tesseract.js', () => ({ createWorker: vi.fn(), OEM: { LSTM_ONLY: 1 }, PSM: { AUTO: '3', SINGLE_LINE: '7', SINGLE_CHAR: '10' } }));
 const response = () => ({ data: { text: '日本語 sample\n', confidence: 87, blocks: [{ blocktype: 'FLOWING_TEXT', text: '日本語 sample', bbox: { x0: 4, y0: 10, x1: 94, y1: 30 }, paragraphs: [{ lines: [{ text: '日本語 sample\n', confidence: 92, bbox: { x0: 4, y0: 10, x1: 94, y1: 30 }, words: [{ text: '日本語', confidence: 89, bbox: { x0: 4, y0: 10, x1: 44, y1: 30 } }, { text: 'sample', confidence: 95, bbox: { x0: 48, y0: 10, x1: 94, y1: 30 } }] }] }] }] } });
 const canvas = () => ({ width: 100, height: 200, toBlob: (callback: BlobCallback) => callback(new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' })) }) as unknown as HTMLCanvasElement;
 let worker: { setParameters: ReturnType<typeof vi.fn>; recognize: ReturnType<typeof vi.fn>; terminate: ReturnType<typeof vi.fn> };
@@ -26,7 +26,7 @@ it('uses bundled worker/core/models and reuses one LSTM worker across pages, ret
   expect(first).toMatchObject({ text: '日本語 sample', confidence: 87, lines: [{ text: '日本語 sample', confidence: 92, bbox: { x0: 4, y0: 10, x1: 94, y1: 30 }, words: [{ text: '日本語' }, { text: 'sample' }] }] });
   expect(worker.recognize).toHaveBeenCalledTimes(2);
   expect(worker.recognize.mock.calls[0][0]).toBeInstanceOf(Uint8Array);
-  expect(worker.recognize.mock.calls[0][2]).toEqual({ text: true, blocks: true });
+  expect(worker.recognize.mock.calls[0][2]).toEqual({ text: true, blocks: true, hocr: true });
   await ocr.close(); await ocr.close(); expect(worker.terminate).toHaveBeenCalledOnce();
 });
 
@@ -34,6 +34,17 @@ it('rejects empty or unsupported language selections before starting a worker', 
   await expect(createPdfOcr([])).rejects.toThrow('pdfOcrFailed');
   await expect(createPdfOcr(['unsupported'] as unknown as PdfOcrLanguage[])).rejects.toThrow('pdfOcrFailed');
   expect(createWorker).not.toHaveBeenCalled();
+});
+
+it('bounds region retries to the requested mode and restores page settings for the next recognition', async () => {
+  const ocr = await createPdfOcr(['eng']);
+  await ocr.recognize(canvas(), { mode: 'character', characters: 'ABC' });
+  expect(worker.setParameters).toHaveBeenLastCalledWith({ tessedit_pageseg_mode: '10', tessedit_char_whitelist: 'ABC' });
+  await ocr.recognize(canvas(), { mode: 'line' });
+  expect(worker.setParameters).toHaveBeenLastCalledWith({ tessedit_pageseg_mode: '7', tessedit_char_whitelist: '' });
+  await ocr.recognize(canvas());
+  expect(worker.setParameters).toHaveBeenLastCalledWith({ tessedit_pageseg_mode: '3', tessedit_char_whitelist: '' });
+  await ocr.close();
 });
 
 it('treats a genuinely blank page as empty and only reports image blocks explicitly identified by the engine', async () => {

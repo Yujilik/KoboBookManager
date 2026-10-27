@@ -11,10 +11,13 @@ interface Run {
   ruby: Run[];
   href?: string;
   ids: string[];
+  dropCap?: { bottom: number; right: number };
+  image?: { src: string; alt: string; aspect: number; spaceAfter: boolean };
 }
 export interface ReflowLink { rect: number[]; href: string }
 export interface ReflowTarget { id: string; x?: number; y?: number }
-export interface ReflowOptions { links?: ReflowLink[]; targets?: ReflowTarget[] }
+export interface ReflowInlineImage { item: TextItem; replace: TextItem[]; src: string; alt: string; aspect: number; hangingUntil?: number }
+export interface ReflowOptions { links?: ReflowLink[]; targets?: ReflowTarget[]; inlineImages?: ReflowInlineImage[]; ocr?: boolean }
 interface Line { runs: Run[]; x: number; end: number; y: number; height: number; dir: string }
 const clean = (value: string) => value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, '');
 const xml = (value: string) => clean(value)
@@ -127,6 +130,52 @@ function groupLines(runs: Run[], normal: number): Line[] {
   return lines;
 }
 
+/** OCR sometimes puts stray glyphs at the crop edge. They cannot define the
+ * indentation of every paragraph in the actual text column. */
+function columnLeft(lines: Line[], normal: number): number {
+  const useful = lines.filter(line => line.height >= normal * .7 && line.height <= normal * 1.4 &&
+    line.runs.map(run => run.text).join('').replace(/\s/g, '').length >= 8);
+  const positions = (useful.length >= 2 ? useful : lines).map(line => line.x).sort((a, b) => a - b);
+  if (!positions.length) return 0;
+  let best: number[] = [];
+  for (let start = 0; start < positions.length; start++) {
+    const group = positions.slice(start).filter(x => x - positions[start] <= normal * .4);
+    if (group.length > best.length) best = group;
+  }
+  return best.length >= 2 ? median(best) : Math.min(...positions);
+}
+
+/** A dropped initial is printed beside the first lines, with its baseline
+ * below theirs. Normalize it before sorting, without imposing a font size. */
+function attachDropCaps(runs: Run[], normal: number) {
+  for (const initial of runs) {
+    if (!/^[\p{Lu}]{1,2}$/u.test(initial.text.trim()) || initial.height < normal * 1.7 ||
+      initial.height > normal * 5 || initial.end - initial.x > normal * 6 || initial.dir !== 'ltr') continue;
+    const first = runs.filter(run => run !== initial && run.dir === 'ltr' && run.height >= normal * .65 &&
+      run.height <= normal * 1.35 && run.x >= initial.x + normal && run.x <= initial.end + normal * 4 &&
+      run.y >= initial.y - normal * .2 && run.y + run.height <= initial.y + initial.height * 1.15 &&
+      run.y >= initial.y + initial.height * .25).sort((a, b) => b.y - a.y || a.x - b.x)[0];
+    if (!first) continue;
+    initial.dropCap = { bottom: initial.y, right: Math.max(initial.end, first.x) };
+    initial.y = first.y;
+    initial.height = first.height;
+    // A separated short word ending, such as the rest of an honorific, belongs
+    // directly to the initial. A complete following word keeps its separation.
+    const joinsWord = /^[\p{Ll}]{1,2}[\p{Punctuation}\s]/u.test(first.text) || /^[\p{Ll}]{1,2}$/u.test(first.text);
+    if (joinsWord) initial.text = initial.text.trim();
+    initial.end = joinsWord ? first.x : Math.min(initial.end, first.x);
+  }
+}
+
+function unwrapHyphen(block: { html: string; text: string }, after: string, wrappedAtRight: boolean): boolean {
+  const soft = /\u00ad\s*$/u.test(block.text);
+  const hard = wrappedAtRight && /\p{Ll}-$/u.test(block.text) && /^\p{Ll}/u.test(after);
+  if (!soft && !hard) return false;
+  block.text = block.text.replace(/[-\u00ad]\s*$/u, '');
+  block.html = block.html.replace(/[-\u00ad](?=(?:<\/(?:a|span)>)*\s*$)/u, '');
+  return true;
+}
+
 /** Associate small kana above a CJK base with that base, instead of inserting it as another body line. */
 function attachRuby(runs: Run[]): Run[] {
   const annotations = new Set<Run>();
@@ -200,8 +249,23 @@ function orderedRegions(runs: Run[], normal: number): Run[][] {
 
 /** Build relative, selectable XHTML. Original coordinates determine reading order, never the output layout. */
 export function reflowText(items: TextItem[], language: string, languages: Set<string>, options: ReflowOptions = {}): string {
-  const runs: Run[] = items.filter(item => clean(item.str).trim() && Number.isFinite(item.transform[4]) && Number.isFinite(item.transform[5]))
-    .flatMap(item => linkedRuns(item, options.links ?? []));
+  const inlineImages = new Map((options.inlineImages ?? []).map(image => {
+    if (!/^(?:[\w.-]+\/)*[\w.-]+\.(?:png|jpe?g)$/i.test(image.src) || image.src.split('/').includes('..') ||
+      !Number.isFinite(image.aspect) || image.aspect <= 0 || image.aspect > 30) throw new Error('conversionFailed');
+    return [image.item, image] as const;
+  }));
+  const replaced = new Set((options.inlineImages ?? []).flatMap(image => image.replace));
+  const runs: Run[] = items.filter(item => (inlineImages.has(item) || !replaced.has(item) && clean(item.str).trim()) && Number.isFinite(item.transform[4]) && Number.isFinite(item.transform[5]))
+    .flatMap(item => {
+      const image = inlineImages.get(item);
+      const fragments = linkedRuns(image && !clean(item.str).trim() ? { ...item, str: '\ufffc' } : item, options.links ?? []);
+      if (!image) return fragments;
+      const first = fragments[0];
+      const spaceAfter = /\s$/u.test(item.str);
+      return [{ ...first, text: image.alt + (spaceAfter ? ' ' : ''), x: item.transform[4], end: item.transform[4] + item.width,
+        image: { src: image.src, alt: image.alt, aspect: image.aspect, spaceAfter }, href: fragments.find(fragment => fragment.href)?.href,
+        dropCap: Number.isFinite(image.hangingUntil) ? { bottom: image.hangingUntil!, right: item.transform[4] + item.width } : undefined }];
+    });
   const targets = validTargets(options.targets ?? []);
   if (!runs.length) return targets.map(target => `<span id="${xml(target.id)}"></span>`).join('');
   const tagged = (value: string) => languageRuns(value, language).map(run => {
@@ -210,8 +274,8 @@ export function reflowText(items: TextItem[], language: string, languages: Set<s
     return `<span lang="${xml(run.language)}" xml:lang="${xml(run.language)}">${xml(run.text)}</span>`;
   }).join('');
   const fragment = (run: Run) => {
-    let content = tagged(run.text);
-    if (run.ruby.length) {
+    let content = run.image ? `<img class="pdf-inline-word" src="${xml(run.image.src)}" alt="${xml(run.image.alt)}" style="height:1em;width:${Number(run.image.aspect.toFixed(4))}em;vertical-align:baseline"/>${run.image.spaceAfter ? ' ' : ''}` : tagged(run.text);
+    if (!run.image && run.ruby.length) {
       const bullet = run.text.match(/^([▪■●•]\s*)(.+)$/su);
       const annotation = run.ruby.sort((a, b) => a.x - b.x).map(reading => reading.text.trim()).join('');
       content = (bullet ? tagged(bullet[1]) : '') + `<ruby>${tagged(bullet ? bullet[2] : run.text)}<rt>${tagged(annotation)}</rt></ruby>`;
@@ -223,6 +287,7 @@ export function reflowText(items: TextItem[], language: string, languages: Set<s
   };
   const normal = [...runs].map(run => run.height).sort((a, b) => a - b)[Math.floor(runs.length * 0.6)];
   const body = attachRuby(runs);
+  attachDropCaps(body, normal);
   attachTargets(body, targets);
   if (body.filter(run => run.dir === 'ttb').length > body.length / 2) {
     // Convert vertical source columns to logical horizontal paragraphs, keeping the reader's typography controls.
@@ -246,8 +311,8 @@ export function reflowText(items: TextItem[], language: string, languages: Set<s
     const lines = groupLines(region, normal);
     const gaps = lines.slice(1).map((line, index) => lines[index].y - line.y).filter(gap => gap > normal * 0.7 && gap < normal * 3);
     const spacing = median(gaps) || normal * 1.5;
-    const left = Math.min(...lines.map(line => line.x)), right = Math.max(...lines.map(line => line.end));
-    let block: { html: string; text: string; heading: boolean; dir: string; bullet: boolean } | undefined;
+    const left = columnLeft(lines, normal), right = Math.max(...lines.map(line => line.end));
+    let block: { html: string; text: string; heading: boolean; dir: string; bullet: boolean; label: boolean; dropCap?: Run['dropCap'] } | undefined;
     let previous: Line | undefined;
     const flush = () => {
       if (!block) return;
@@ -263,17 +328,27 @@ export function reflowText(items: TextItem[], language: string, languages: Set<s
         }
         html += fragment(run); text += run.text; prior = run;
       }
-      const heading = line.height > normal * 1.3 && text.trim().length < 160;
       const gap = previous ? previous.y - line.y : 0;
+      // OCR boxes measure ink, not font typography. Chapter navigation supplies
+      // trustworthy headings; digital PDF font sizes can still identify them.
+      const heading = !options.ocr && line.height > normal * 1.3 && text.trim().length < 160;
       const bullet = /^[▪■●•]/u.test(text.trim());
       const label = /^(?:example|例|例文)\s*[:：]/iu.test(text.trim());
-      const indented = line.x - left > normal * 0.65 && !block?.bullet;
+      const besideInitial = block?.dropCap && line.y >= block.dropCap.bottom - normal * .3 && line.x <= block.dropCap.right + normal;
+      // A quotation can have a stable inset margin for many consecutive lines.
+      // Only a new rightward shift marks another first-line indentation.
+      const indentationShift = previous ? line.x - previous.x : line.x - left;
+      const indented = line.x - left > normal * 0.65 && indentationShift > normal * .65 && !block?.bullet && !besideInitial;
       const endsParagraph = previous && previous.end < right - normal * 2 && /[.!?。！？]["'”’」』)]?\s*$/.test(block?.text || '');
-      if (block && !heading && !block.heading && !bullet && !label && block.dir === line.dir && gap > 0 && gap < spacing * 1.5 && !indented && !endsParagraph) {
-        const separator = /[-\u00ad]$/.test(block.text.trim()) ? '' : lineSeparator(block.text.trim(), text.trim());
+      const wrappedWord = !!block && !!previous && /(?:\p{Ll}-|\u00ad)\s*$/u.test(block.text) && /^\p{Ll}/u.test(text.trim()) && line.height <= normal * 1.8 && previous.height <= normal * 1.8;
+      if (block && !block.label && !bullet && !label && block.dir === line.dir && gap > 0 && gap < spacing * 1.5 &&
+        (wrappedWord || !heading && !block.heading && !indented && !endsParagraph)) {
+        const unwrapped = unwrapHyphen(block, text.trim(), wrappedWord || !!previous && previous.end >= right - normal * 2);
+        const separator = unwrapped || /[-\u00ad]$/.test(block.text.trim()) ? '' : lineSeparator(block.text.trim(), text.trim());
         block.html += separator + html; block.text += separator + text;
+        if (wrappedWord) block.heading = block.heading && heading;
       } else {
-        flush(); block = { html, text, heading, dir: line.dir, bullet };
+        flush(); block = { html, text, heading, dir: line.dir, bullet, label, dropCap: line.runs.find(run => run.dropCap)?.dropCap };
       }
       previous = line;
     }

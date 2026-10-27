@@ -1,8 +1,9 @@
 import type JSZip from 'jszip';
 import type { NavigationEntry } from './pdf-navigation';
+import { languageRuns } from './pdf-language';
 
 interface Page { number: number; path: string; doc: Document; blocks: Element[]; text: string; length: number }
-interface Marker { kind: string; number: number; label: string }
+interface Marker { kind: string; number: number; label: string; offset: number }
 interface Section { marker: Marker; page: Page; queries: string[] }
 const XHTML = 'http://www.w3.org/1999/xhtml';
 const clean = (value: string) => value.normalize('NFKC').replace(/\s+/g, ' ').trim();
@@ -13,21 +14,27 @@ function markers(text: string, language: string): Marker[] {
   const value = clean(text).replace(/\s/g, ''), result: Marker[] = [];
   for (const match of value.matchAll(/第[-—]*(\d{1,2}|[一二三四五六七八九十])[\p{Script=Hiragana}]{0,4}(週|周|章|部|課)/gu)) {
     const n = number(match[1]), unit = match[2], kind = /週|周/.test(unit) ? 'week' : unit;
-    if (n > 0 && n <= 32) result.push({ kind, number: n, label: `第${n}${kind === 'week' && language.startsWith('ja') ? '週' : unit}` });
+    if (n > 0 && n <= 32) result.push({ kind, number: n, label: `第${n}${kind === 'week' && language.startsWith('ja') ? '週' : unit}`, offset: match.index ?? 0 });
   }
   for (const match of clean(text).matchAll(/\b(week|chapter|part|semana|cap[ií]tulo)\s+(\d{1,2})\b/giu)) {
     const n = Number(match[2]), kind = /week|semana/i.test(match[1]) ? 'week' : match[1].toLowerCase();
-    if (n > 0 && n <= 32) result.push({ kind, number: n, label: `${match[1]} ${n}` });
+    if (n > 0 && n <= 32) result.push({ kind, number: n, label: `${match[1]} ${n}`, offset: match.index ?? 0 });
   }
   for (const match of value.matchAll(/제?(\d{1,2})(주|장|과)/gu)) {
     const n = Number(match[1]);
-    if (n > 0 && n <= 32) result.push({ kind: match[2] === '주' ? 'week' : match[2], number: n, label: `제${n}${match[2]}` });
+    if (n > 0 && n <= 32) result.push({ kind: match[2] === '주' ? 'week' : match[2], number: n, label: `제${n}${match[2]}`, offset: match.index ?? 0 });
   }
   return result;
 }
 
 function candidates(page: Page): string[] {
-  return page.blocks.map(block => clean(block.textContent || '')).filter(text => {
+  const phrases = page.blocks.flatMap(block => {
+    const text = clean(block.textContent || '');
+    // OCR may join a translated title with unrelated Latin/CJK noise. Retain
+    // meaningful script runs as queries instead of requiring the noisy whole.
+    return [text, ...languageRuns(text, 'ja').map(run => clean(run.text))];
+  });
+  return [...new Set(phrases)].filter(text => {
     const letters = text.match(/\p{L}/gu)?.length || 0;
     return text.length >= 8 && text.length <= 180 && letters >= 6 && !/^https?:/i.test(text);
   });
@@ -85,9 +92,13 @@ export async function improveOcrNavigation(zip: JSZip, bookLanguage?: string): P
   const series = allSeries[0];
   if (!series) return;
   const maximumGap = Math.max(5, Math.ceil(pages.length / series.length));
+  const observedGaps = series.flatMap(entry => entry.pages.slice(1).map((page, index) => page - entry.pages[index])).sort((a, b) => a - b);
+  // Use the density of actual running headers. The average section length can
+  // bridge a distant one-off example in the introduction to the real chapter.
+  const runningGap = Math.min(maximumGap, Math.max(3, (observedGaps[Math.floor(observedGaps.length / 2)] || 1) * 3));
   const clusters = series.map(entry => {
     const groups: number[][] = [];
-    for (const page of entry.pages) { if (!groups.length || page - groups.at(-1)!.at(-1)! > maximumGap) groups.push([]); groups.at(-1)!.push(page); }
+    for (const page of entry.pages) { if (!groups.length || page - groups.at(-1)!.at(-1)! > runningGap) groups.push([]); groups.at(-1)!.push(page); }
     groups.sort((a, b) => b.length - a.length);
     return { marker: entry.marker, pages: groups[0] };
   });
@@ -108,7 +119,14 @@ export async function improveOcrNavigation(zip: JSZip, bookLanguage?: string): P
   // sections. Order disambiguates repeated translated titles in workbook series.
   const scores = sections.map(section => preface.map(entry => {
     const explicit = markers(entry.text, language).filter(marker => marker.kind === section.marker.kind);
-    if (explicit.length) return explicit.some(marker => marker.number === section.marker.number) ? 1 : 0;
+    if (new Set(explicit.map(marker => marker.number)).size > 1) return 0;
+    if (explicit.length) {
+      const matching = explicit.find(marker => marker.number === section.marker.number);
+      if (!matching) return 0;
+      // A heading starts with its marker. A marker embedded in explanatory
+      // prose needs the same independent title evidence as any unnumbered row.
+      if (matching.offset <= 3) return 1;
+    }
     return Math.max(0, ...section.queries.map(query => similarity(query, entry.text)));
   }));
   const memo = new Map<string, { score: number; indices: number[] }>();
@@ -118,7 +136,11 @@ export async function improveOcrNavigation(zip: JSZip, bookLanguage?: string): P
     let best = { score: -Infinity, indices: [] as number[] };
     for (let i = after; i < preface.length; i++) {
       if (scores[section][i] < .45) continue;
-      const next = choose(section + 1, i + 1), score = scores[section][i] + next.score;
+      const next = choose(section + 1, i + 1);
+      // A real contents list forms one compact ordered sequence. Prefer that
+      // sequence over a matching week/chapter mentioned several pages earlier.
+      const pageGap = next.indices.length ? preface[next.indices[0]].page.number - preface[i].page.number : 0;
+      const score = scores[section][i] + next.score - pageGap * .15;
       if (score > best.score) best = { score, indices: [i, ...next.indices] };
     }
     memo.set(identity, best); return best;
@@ -131,7 +153,8 @@ export async function improveOcrNavigation(zip: JSZip, bookLanguage?: string): P
     const nav = new DOMParser().parseFromString(await navFile.async('string'), 'application/xhtml+xml');
     for (const anchor of Array.from(nav.querySelectorAll('nav[epub\\:type="toc"] a'))) {
       const title = clean(anchor.textContent || ''), href = anchor.getAttribute('href') || '', target = Number(href.match(/page-(\d+)/)?.[1]);
-      if (target < first && /^(?:cover(?: page)?|title(?: page)?|copyright|preface|introduction|封面|书名|版权|表紙|扉|著作権|はじめに)$/iu.test(title.replace(/\s/g, ''))) chapters.push({ title, href, children: [] });
+      const explicitBookmark = /#pdf-destination-\d+$/.test(href) && !/^\d+$/.test(title);
+      if (target < first && (explicitBookmark || /^(?:cover(?: page)?|title(?: page)?|copyright|preface|introduction|封面|书名|版权|前言|序言|序文|表紙|扉|著作権|はじめに)$/iu.test(title.replace(/\s/g, '')))) chapters.push({ title, href, children: [] });
     }
   }
   for (const [index, section] of sections.entries()) {
