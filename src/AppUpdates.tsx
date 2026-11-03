@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { ExternalLink, RefreshCw } from 'lucide-react';
-import { isAndroid } from './native';
+import { isNative } from './native';
 import { useI18n } from './i18n';
 import { APP_VERSION, fetchUpdate, updater, type AppUpdate } from './updates';
 import type { MessageKey } from './messages';
@@ -26,7 +26,7 @@ export function useAppUpdates() {
     } finally { locked.current = false; setWorking(false); }
   };
   useEffect(() => {
-    if (!isAndroid) return;
+    if (!isNative) return;
     let alive = true;
     void updater.getVersion().then(({ version }) => {
       if (!alive) return;
@@ -39,7 +39,7 @@ export function useAppUpdates() {
     if (!available || locked.current) return;
     locked.current = true; setWorking(true);
     try {
-      if (isAndroid) await updater.openRelease({ url: available.url });
+      if (isNative) await updater.openRelease({ url: available.url });
       else window.open(available.url, '_blank', 'noopener,noreferrer');
       setStatus(undefined);
     } catch {

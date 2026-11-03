@@ -1,4 +1,4 @@
-import { isAndroid, native } from './native';
+import { isNative, native } from './native';
 import { original } from './library';
 import { editEpub } from './epub';
 import { readCover } from './cover';
@@ -59,7 +59,7 @@ function outputMime(book: Book, format: ExportFormat) {
 }
 export async function saveFile(bytes: Uint8Array, name: string, mime: string) {
   await validateOutput(bytes, mime);
-  if (isAndroid) {
+  if (isNative) {
     const file = await stageOutput(bytes, name, mime);
     try {
       const receipt = await native.saveDocument(file);
@@ -72,7 +72,7 @@ export async function saveFile(bytes: Uint8Array, name: string, mime: string) {
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
 export async function exportCollection(books: Book[], format: ExportFormat, send: boolean, locale: Locale, t: Translate, status: (label: string) => void, options?: ExportOptions) {
-  if (send && !isAndroid) throw new Error('Local delivery requires Android.');
+  if (send && !isNative) throw new Error('Local delivery requires Android.');
   if (!books.length || books.some(book => !book.title.trim())) throw new Error('titleRequired');
   if (format !== 'original' && books.some(book => pdfOptions(book, options)?.ocrLanguages?.length === 0)) throw new Error('pdfOcrFailed');
   const names = uniqueNames(books.map(book => filename(book, format)));

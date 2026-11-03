@@ -20,6 +20,7 @@ vi.mock('@capacitor/filesystem', () => ({ Directory: { Cache: 'CACHE' }, Filesys
 vi.mock('../src/native', async importOriginal => ({
   ...await importOriginal<typeof import('../src/native')>(),
   isAndroid: true,
+  isNative: true,
   native: { saveDocument: vi.fn(), startDelivery: vi.fn(), stopDelivery: vi.fn() },
 }));
 vi.mock('../src/library', () => ({ original: vi.fn() }));

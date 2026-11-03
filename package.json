@@ -9,12 +9,15 @@
     "test": "vitest run",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android",
+    "ios:sync": "npm run build && cap sync ios",
+    "ios:open": "cap open ios",
     "icons": "node scripts/generate-icons.mjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.3",
     "@capacitor/core": "^8.5.3",
     "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/ios": "^8.5.3",
     "idb": "^8.0.4",
     "jszip": "^3.10.2",
     "lucide-react": "^1.60.0",

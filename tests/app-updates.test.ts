@@ -6,7 +6,7 @@ import { AppUpdates, useAppUpdates } from '../src/AppUpdates';
 import { I18nProvider } from '../src/i18n';
 import { updater } from '../src/updates';
 
-vi.mock('../src/native', () => ({ isAndroid: true }));
+vi.mock('../src/native', () => ({ isAndroid: true, isNative: true }));
 vi.mock('../src/updates', async importOriginal => ({
   ...await importOriginal<typeof import('../src/updates')>(),
   updater: { getVersion: vi.fn(), openRelease: vi.fn() },

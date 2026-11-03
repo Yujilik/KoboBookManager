@@ -5,7 +5,7 @@ import type { Book, ExportFormat } from './types';
 import { MAX_BOOK_SIZE } from './epub';
 import { bookFormat, readBook } from './book-import';
 import * as store from './library';
-import { dataURL, fromBase64, isAndroid, native, type Delivery, type Folder } from './native';
+import { dataURL, fromBase64, isNative, native, type Delivery, type Folder } from './native';
 import { exportCollection, saveFile, type ExportOptions } from './export';
 import { CollectionEditor } from './CollectionEditor';
 import { I18nProvider, translatedError, useI18n } from './i18n';
@@ -114,7 +114,7 @@ function App() {
   }
   const chooseLocal = () => {
     setSourcePicker(false);
-    if (!isAndroid) { directory.current?.click(); return; }
+    if (!isNative) { directory.current?.click(); return; }
     void run(t('openingFolder'), async () => {
       const folder = await native.chooseFolder();
       const next = sources.some(source => source.uri === folder.uri) ? sources : [...sources, folder];
@@ -127,7 +127,7 @@ function App() {
     await refresh(); notify(t('saved'));
   });
   const exportBooks = (next: Book[], format: ExportFormat, send = false, options?: ExportOptions) => void run(t('preparing'), async () => {
-    const keepAwake = isAndroid && format !== 'original' && next.some(book => book.format === 'pdf');
+    const keepAwake = isNative && format !== 'original' && next.some(book => book.format === 'pdf');
     if (keepAwake) await native.setProcessing({ active: true });
     try {
       const result = await exportCollection(next, format, send, locale, t, setBusy, options);

@@ -17,6 +17,8 @@ interface KoboNative {
 }
 export const native = registerPlugin<KoboNative>('KoboNative');
 export const isAndroid = Capacitor.getPlatform() === 'android';
+/** Android or iOS app: native folders, save dialogs and Wi-Fi delivery. False in a browser. */
+export const isNative = isAndroid || Capacitor.getPlatform() === 'ios';
 export function toBase64(bytes: Uint8Array) {
   let binary = '';
   for (let i = 0; i < bytes.length; i += 32768) binary += String.fromCharCode(...bytes.subarray(i, i + 32768));

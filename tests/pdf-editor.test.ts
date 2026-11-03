@@ -9,7 +9,7 @@ import type { Book } from '../src/types';
 import { coverDataURL } from './cover-fixture';
 import { defaultOcrLanguages, PDF_OCR_LANGUAGES, ocrLanguageNames, type PdfOcrLanguage } from '../src/pdf-ocr-options';
 
-vi.mock('../src/native', () => ({ isAndroid: true, dataURL: vi.fn() }));
+vi.mock('../src/native', () => ({ isAndroid: true, isNative: true, dataURL: vi.fn() }));
 let root: Root, container: HTMLDivElement;
 const onExport = vi.fn();
 const book: Book = { ...emptyMetadata('PDF book'), id: '123', filename: 'book.pdf', format: 'pdf', size: 100, added: '', updated: '' };
