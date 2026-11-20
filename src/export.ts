@@ -8,8 +8,10 @@ import JSZip from 'jszip';
 import { uniqueNames } from './collection';
 import type { Locale, Translate } from './messages';
 import { checkReceipt, discardOutput, stageOutput, validateOutput } from './output';
-import type { StagedFile } from './native';
+import type { ReplacedFile, StagedFile } from './native';
 import type { PdfConversionOptions } from './pdf-ocr-options';
+import { canReplace, inPlaceName } from './in-place';
+export { canReplace, inPlaceName };
 export interface ExportOptions extends PdfConversionOptions {
   pdfByBook?: Record<string, PdfConversionOptions>;
 }
@@ -70,6 +72,36 @@ export async function saveFile(bytes: Uint8Array, name: string, mime: string) {
   }
   const url = URL.createObjectURL(new Blob([bytes.slice().buffer], { type: mime }));
   const anchor = document.createElement('a'); anchor.href = url; anchor.download = name; anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+export interface Replacement { book: Book; bytes: Uint8Array; file: ReplacedFile }
+/**
+ * Convert each EPUB to KEPUB and write it next to its original. Native code first checks the
+ * original is still the file that was imported (its SHA-256 is the book id), never overwrites an
+ * existing file, and deletes the original only after the KEPUB reads back intact.
+ * `onReplaced` runs straight after each book so the library never lags behind the folder;
+ * one failure does not undo earlier books.
+ */
+export async function replaceOriginals(books: Book[], t: Translate, status: (label: string) => void, onReplaced: (replacement: Replacement) => Promise<void>) {
+  if (!books.length || books.some(book => !canReplace(book))) throw new Error('replaceUnavailable');
+  if (books.some(book => !book.title.trim())) throw new Error('titleRequired');
+  const replaced: Book[] = [], failures: { book: Book; error: unknown }[] = [];
+  for (let index = 0; index < books.length; index++) {
+    const book = books[index];
+    status(t('reading', { index: index + 1, count: books.length, name: book.title }));
+    try {
+      const bytes = await generate(book, 'kepub', progress => status(t('converting', { index: index + 1, count: books.length, progress })));
+      const staged = await stageOutput(bytes, inPlaceName(book), 'application/epub+zip');
+      let file: ReplacedFile;
+      try {
+        file = await native.replaceDocument({ ...staged, uri: book.sourceUri!, folder: book.sourceFolder!, expectedSha256: book.id });
+        checkReceipt(staged, file);
+        if (!file.uri || !file.name) throw new Error('outputInvalid');
+      } finally { await discardOutput(staged); }
+      replaced.push(book);
+      await onReplaced({ book, bytes, file });
+    } catch (error) { failures.push({ book, error }); }
+  }
+  return { replaced, failures };
 }
 export async function exportCollection(books: Book[], format: ExportFormat, send: boolean, locale: Locale, t: Translate, status: (label: string) => void, options?: ExportOptions) {
   if (send && !isNative) throw new Error('Local delivery requires Android.');

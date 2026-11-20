@@ -1,6 +1,7 @@
 package com.yujilik.kobobookmanager;
 
 import android.app.Activity;
+import android.content.ContentResolver;
 import android.content.Intent;
 import android.database.Cursor;
 import android.net.Uri;
@@ -23,7 +24,8 @@ public class KoboNativePlugin extends Plugin {
 
     @PluginMethod public void chooseFolder(PluginCall call) {
         Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        // Write access lets "Replace the original" put a KEPUB where its EPUB was.
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
         startActivityForResult(call, intent, "folderChosen");
     }
 
@@ -33,7 +35,7 @@ public class KoboNativePlugin extends Plugin {
         if (result.getResultCode() != Activity.RESULT_OK || data == null || data.getData() == null) { call.reject("Seleção de pasta cancelada."); return; }
         try {
             Uri uri = data.getData();
-            getContext().getContentResolver().takePersistableUriPermission(uri, data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            getContext().getContentResolver().takePersistableUriPermission(uri, data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION));
             String name = "Minha pasta";
             Uri document = DocumentsContract.buildDocumentUriUsingTree(uri, DocumentsContract.getTreeDocumentId(uri));
             try (Cursor cursor = getContext().getContentResolver().query(document, new String[]{DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null)) { if (cursor != null && cursor.moveToFirst()) name = cursor.getString(0); }
@@ -124,6 +126,120 @@ public class KoboNativePlugin extends Plugin {
                 call.reject("Não foi possível salvar o arquivo no destino escolhido: " + e.getMessage(), e);
             }
         });
+    }
+
+    /**
+     * Convert-and-replace, without risking the user's files: the original must still hash to
+     * expectedSha256 (the book as imported); nothing is ever overwritten (an existing item with the
+     * KEPUB's name stops with targetExists); the KEPUB is created as a new document and read back,
+     * and removed again on any failure; the original is checked again and only then deleted.
+     */
+    @PluginMethod public void replaceDocument(PluginCall call) {
+        getBridge().execute(() -> {
+            ExportPayload.Checked checked;
+            try { checked = checkedOutput(call.getData()); }
+            catch (Exception e) { call.reject("outputInvalid: " + e.getMessage(), "OUTPUT_INVALID", e); return; }
+            Uri created = null;
+            try {
+                String folder = call.getString("folder"), original = call.getString("uri"), expected = call.getString("expectedSha256");
+                if (folder == null || original == null) throw new FileNotFoundException("originalMissing: missing file");
+                if (expected == null || !expected.matches("[0-9a-f]{64}")) throw new IOException("originalChanged: no identity for the original");
+                ContentResolver resolver = getContext().getContentResolver();
+                Uri tree = Uri.parse(folder), source = Uri.parse(original);
+                // Folders connected by older versions only have read access (also catches Android 7, which
+                // fails a read-only createDocument with null instead of a SecurityException).
+                if (!hasWriteGrant(tree)) throw new SecurityException("no persisted write permission for this folder");
+                String parentId = findParent(tree, DocumentsContract.getTreeDocumentId(tree), DocumentsContract.getDocumentId(source), 0);
+                String sourceName = parentId == null ? null : documentInfo(source)[0];
+                if (sourceName == null) throw new FileNotFoundException("originalMissing: not in its folder");
+                String name = InPlace.kepubName(sourceName);
+                if (name == null) throw new IOException("Already a KEPUB: nothing to replace");
+                checkOriginal(resolver, source, expected);
+                if (hasChild(tree, parentId, name)) throw new IOException("targetExists: " + name);
+                created = DocumentsContract.createDocument(resolver, DocumentsContract.buildDocumentUriUsingTree(tree, parentId), checked.mime, name);
+                if (created == null) throw new IOException("The converted file could not be created");
+                // A provider that renamed it (e.g. "Book.kepub (1).epub") means a clash; the Kobo also needs the suffix.
+                String createdName = documentInfo(created)[0];
+                if (createdName != null && !InPlace.isKepubName(createdName)) throw new IOException("targetExists: created as " + createdName);
+                try (InputStream input = new FileInputStream(checked.file); OutputStream output = resolver.openOutputStream(created, "wt")) {
+                    ExportPayload.copy(input, output, checked.size, checked.sha256);
+                }
+                // Some providers only commit bytes when their output stream closes.
+                try (InputStream readback = resolver.openInputStream(created)) { ExportPayload.verifyStream(readback, checked.size, checked.sha256); }
+                checkOriginal(resolver, source, expected);
+                // Commit point: from here on the verified KEPUB is never removed again.
+                Uri result = created; created = null;
+                boolean kept;
+                try { kept = !DocumentsContract.deleteDocument(resolver, source); } catch (Exception e) { kept = true; }
+                String[] info;
+                try { info = documentInfo(result); } catch (Exception e) { info = new String[]{null, null}; }
+                JSObject answer = new JSObject();
+                answer.put("uri", result.toString()); answer.put("name", info[0] != null ? info[0] : name); answer.put("size", checked.size);
+                answer.put("sha256", checked.sha256); answer.put("modified", info[1]); answer.put("originalKept", kept);
+                call.resolve(answer);
+            } catch (SecurityException e) {
+                if (created != null) deleteIncomplete(created);
+                call.reject("folderReadOnly: " + e.getMessage(), "FOLDER_READ_ONLY", e);
+            } catch (Exception e) {
+                if (created != null) deleteIncomplete(created);
+                String message = String.valueOf(e.getMessage());
+                if (message.startsWith("originalMissing")) call.reject(message, "ORIGINAL_MISSING", e);
+                else if (message.startsWith("originalChanged")) call.reject(message, "ORIGINAL_CHANGED", e);
+                else if (message.startsWith("targetExists")) call.reject(message, "TARGET_EXISTS", e);
+                else call.reject("Não foi possível salvar o arquivo no destino escolhido: " + message, "SAVE_FAILED", e);
+            }
+        });
+    }
+
+    /** The original must still be the file that was imported: its SHA-256 is the library book id. */
+    private void checkOriginal(ContentResolver resolver, Uri source, String expected) throws IOException {
+        String actual;
+        try (InputStream input = resolver.openInputStream(source)) {
+            if (input == null) throw new FileNotFoundException("unreadable");
+            actual = ExportPayload.sha256(input);
+        } catch (FileNotFoundException e) { throw new FileNotFoundException("originalMissing: " + e.getMessage()); }
+        if (!expected.equals(actual)) throw new IOException("originalChanged: content differs from the imported book");
+    }
+
+    /** Document id of the folder that directly contains `childId`, searching the tree like scan(). */
+    private String findParent(Uri tree, String parent, String childId, int depth) {
+        if (depth > 12) return null;
+        String[] columns = {DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_MIME_TYPE};
+        List<String> folders = new ArrayList<>();
+        try (Cursor cursor = getContext().getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent), columns, null, null, null)) {
+            if (cursor == null) return null;
+            while (cursor.moveToNext()) {
+                if (childId.equals(cursor.getString(0))) return parent;
+                if (DocumentsContract.Document.MIME_TYPE_DIR.equals(cursor.getString(1))) folders.add(cursor.getString(0));
+            }
+        }
+        for (String folder : folders) { String found = findParent(tree, folder, childId, depth + 1); if (found != null) return found; }
+        return null;
+    }
+
+    private boolean hasWriteGrant(Uri tree) {
+        for (android.content.UriPermission permission : getContext().getContentResolver().getPersistedUriPermissions()) {
+            if (permission.getUri().equals(tree) && permission.isWritePermission()) return true;
+        }
+        return false;
+    }
+
+    /** Whether any item (file or folder, in any letter case) in `parent` already has this name. */
+    private boolean hasChild(Uri tree, String parent, String name) {
+        String[] columns = {DocumentsContract.Document.COLUMN_DISPLAY_NAME};
+        try (Cursor cursor = getContext().getContentResolver().query(DocumentsContract.buildChildDocumentsUriUsingTree(tree, parent), columns, null, null, null)) {
+            while (cursor != null && cursor.moveToNext()) if (name.equalsIgnoreCase(cursor.getString(0))) return true;
+        }
+        return false;
+    }
+
+    /** Display name and last-modified value, in the same form scan() reports them. */
+    private String[] documentInfo(Uri document) {
+        String[] columns = {DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_LAST_MODIFIED};
+        try (Cursor cursor = getContext().getContentResolver().query(document, columns, null, null, null)) {
+            if (cursor != null && cursor.moveToFirst()) return new String[]{cursor.getString(0), cursor.getString(1)};
+        }
+        return new String[]{null, null};
     }
 
     private ExportPayload.Checked checkedOutput(org.json.JSONObject options) throws Exception {

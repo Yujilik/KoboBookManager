@@ -22,9 +22,9 @@ beforeEach(() => {
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.unstubAllGlobals(); });
 async function mount(source: Book | Book[] = book, busy = false) {
   await act(async () => root.render(createElement(I18nProvider, null, createElement(CollectionEditor, {
-    books: Array.isArray(source) ? source : [source], busy, onClose: vi.fn(), onSave: vi.fn(), onRemove: vi.fn(), onExport,
+    books: Array.isArray(source) ? source : [source], busy, onClose: vi.fn(), onSave: vi.fn(), onRemove: vi.fn(), onReplace: vi.fn(), folders: [], onExport,
   }))));
-  await act(async () => button('Export & send').click());
+  await act(async () => button('Export').click());
 }
 
 it('offers KEPUB, EPUB and the original PDF with an explanation of font/layout preservation', async () => {
@@ -110,6 +110,7 @@ it('keeps existing EPUB export calls free of PDF recognition options', async () 
   await mount(source);
   expect(container.querySelector('.ocr-options')).toBeNull();
   await act(async () => button('Convert and save KEPUB').click());
+  await act(async () => button('Save a copy').click());
   expect(onExport).toHaveBeenLastCalledWith([source], 'kepub');
   await act(async () => button('Convert to KEPUB & send to Kobo').click());
   expect(onExport).toHaveBeenLastCalledWith([source], 'kepub', true);
@@ -127,7 +128,8 @@ it('keeps each PDF recognition selection when exporting a collection with an EPU
   await act(async () => container.querySelectorAll<HTMLButtonElement>('.collection-item')[2].click());
   expect(container.querySelector('.ocr-options')).toBeNull();
   const options = { pdfByBook: { japanese: { ocrLanguages: ['eng', 'jpn'], ocrAutomatic: false }, thai: { ocrLanguages: ['tha'], ocrAutomatic: false } } };
-  await act(async () => button('Convert collection to KEPUB ZIP').click());
+  await act(async () => button('Convert and save KEPUB').click());
+  await act(async () => button('Save a copy').click());
   expect(onExport).toHaveBeenLastCalledWith(sources, 'kepub', false, options);
   await act(async () => button('Convert to KEPUB & send to Kobo').click());
   expect(onExport).toHaveBeenLastCalledWith(sources, 'kepub', true, options);
@@ -154,10 +156,11 @@ it('blocks the converted collection when another PDF has no recognition language
   expect(button('Convert to KEPUB & send to Kobo').disabled).toBe(true);
   expect(container.querySelector('[role="alert"]')?.textContent).toBe('Select at least one recognition language.');
   await act(async () => container.querySelectorAll<HTMLButtonElement>('.collection-item')[2].click());
-  expect(button('Convert collection to KEPUB ZIP').disabled).toBe(true);
+  await act(async () => button('Convert and save KEPUB').click());
+  expect(button('Save a copy').disabled).toBe(true);
   expect(button('Convert to KEPUB & send to Kobo').disabled).toBe(true);
   expect(button('Export edited EPUBs as ZIP').disabled).toBe(false);
-  await act(async () => button('Convert collection to KEPUB ZIP').click());
+  await act(async () => button('Save a copy').click());
   expect(onExport).not.toHaveBeenCalled();
   await act(async () => button('Export edited EPUBs as ZIP').click());
   expect(onExport).toHaveBeenLastCalledWith(sources, 'original');

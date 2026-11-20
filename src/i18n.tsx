@@ -12,6 +12,14 @@ export function useI18n() { const value = useContext(Context); if (!value) throw
 
 export function translatedError(error: unknown, t: Translate): string {
   const message = error instanceof Error ? error.message : String((error as { message?: unknown })?.message ?? error);
+  const code = (error as { code?: unknown })?.code;
+  if (/folderReadOnly/.test(message) || code === 'FOLDER_READ_ONLY') return t('folderReadOnly');
+  if (/originalMissing/.test(message) || code === 'ORIGINAL_MISSING') return t('originalMissing');
+  if (/originalChanged/.test(message) || code === 'ORIGINAL_CHANGED') return t('originalChanged');
+  if (/targetExists/.test(message) || code === 'TARGET_EXISTS') return t('targetExists');
+  if (code === 'FOLDER_FAILED') return t('folderFailed');
+  if (code === 'SAVE_FAILED') return t('saveFailed');
+  if (message === 'replaceUnavailable') return t('replaceUnavailable');
   if (/outputInvalid|OUTPUT_INVALID/.test(message) || (error as { code?: unknown })?.code === 'OUTPUT_INVALID') return t('outputInvalid');
   if (message === 'pdfPasswordRequired') return t('pdfPasswordRequired');
   if (message === 'pdfConversionTooLarge') return t('pdfConversionTooLarge');

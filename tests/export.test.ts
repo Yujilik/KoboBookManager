@@ -6,7 +6,7 @@ import { native, fromBase64 } from '../src/native';
 import { original } from '../src/library';
 import { convert } from '../src/converter';
 import { emptyMetadata, readEpub } from '../src/epub';
-import { exportCollection, filename, type ExportOptions } from '../src/export';
+import { exportCollection, filename, inPlaceName, replaceOriginals, type ExportOptions } from '../src/export';
 import { pdfToEpub } from '../src/pdf';
 import { translator } from '../src/messages';
 import type { Book, ExportFormat } from '../src/types';
@@ -21,7 +21,7 @@ vi.mock('../src/native', async importOriginal => ({
   ...await importOriginal<typeof import('../src/native')>(),
   isAndroid: true,
   isNative: true,
-  native: { saveDocument: vi.fn(), startDelivery: vi.fn(), stopDelivery: vi.fn() },
+  native: { saveDocument: vi.fn(), replaceDocument: vi.fn(), startDelivery: vi.fn(), stopDelivery: vi.fn() },
 }));
 vi.mock('../src/library', () => ({ original: vi.fn() }));
 vi.mock('../src/converter', () => ({ convert: vi.fn() }));
@@ -341,5 +341,85 @@ describe('convert and send in one operation', () => {
     await expect(exportCollection([book()], 'kepub', false, 'en-GB', translator('en-GB'), vi.fn())).rejects.toThrow('cancelled');
     expect(cache.size).toBe(0);
     expect(native.startDelivery).not.toHaveBeenCalled();
+  });
+});
+
+describe('convert and replace the original in its folder', () => {
+  const folderBook = (id = 'one', filename = 'Original Name.epub'): Book => ({ ...book(id), filename, sourceUri: `content://tree/doc/${id}`, sourceFolder: 'content://tree/books' });
+  const onReplaced = vi.fn();
+  const replace = (books: Book[]) => replaceOriginals(books, translator('en-GB'), vi.fn(), onReplaced);
+  beforeEach(() => {
+    onReplaced.mockReset(); onReplaced.mockResolvedValue(undefined);
+    vi.mocked(native.replaceDocument).mockImplementation(async ({ name, size, sha256 }) => ({ uri: `content://tree/doc/new-${name}`, name, size, sha256, modified: '1700000000000', originalKept: false }));
+  });
+
+  it('names the KEPUB after the original file, not the edited title', () => {
+    expect(inPlaceName({ filename: 'Original Name.epub' })).toBe('Original Name.kepub.epub');
+    expect(inPlaceName({ filename: 'Book.EPUB' })).toBe('Book.kepub.epub');
+    expect(inPlaceName({ filename: 'no-extension' })).toBe('no-extension.kepub.epub');
+    expect(inPlaceName({ filename: '  ' })).toBe('book.kepub.epub');
+  });
+
+  it('hands native code the staged KEPUB, the original, its folder and the imported hash that identifies it', async () => {
+    const { replaced, failures } = await replace([folderBook()]);
+    expect(failures).toEqual([]);
+    expect((await readEpub(vi.mocked(convert).mock.calls[0][0])).metadata.title).toBe('Edited title');
+    const staged = vi.mocked(Filesystem.writeFile).mock.calls[0][0];
+    expect(fromBase64(staged.data as string)).toEqual(converted);
+    expect(native.replaceDocument).toHaveBeenCalledWith(expect.objectContaining({
+      path: staged.path, name: 'Original Name.kepub.epub', mime: 'application/epub+zip', size: converted.byteLength, sha256: hash(converted),
+      uri: 'content://tree/doc/one', folder: 'content://tree/books', expectedSha256: 'one',
+    }));
+    expect(replaced.map(item => item.id)).toEqual(['one']);
+    expect(onReplaced).toHaveBeenCalledOnce();
+    const [{ book: done, bytes, file }] = onReplaced.mock.calls[0];
+    expect(done.id).toBe('one'); expect(bytes).toEqual(converted);
+    expect(file).toMatchObject({ name: 'Original Name.kepub.epub', modified: '1700000000000', originalKept: false });
+    expect(Filesystem.deleteFile).toHaveBeenCalledWith({ directory: 'CACHE', path: staged.path });
+    expect(native.saveDocument).not.toHaveBeenCalled();
+    expect(native.startDelivery).not.toHaveBeenCalled();
+  });
+
+  it('updates the library after each book, before converting the next one', async () => {
+    const order: string[] = [];
+    vi.mocked(convert).mockImplementation(async () => { order.push('convert'); return converted; });
+    onReplaced.mockImplementation(async ({ book: done }) => { order.push('library ' + done.id); });
+    await replace([folderBook('one', 'a.epub'), folderBook('two', 'b.epub')]);
+    expect(order).toEqual(['convert', 'library one', 'convert', 'library two']);
+  });
+
+  it('refuses books with no original in a connected folder, KEPUBs and PDFs before converting anything', async () => {
+    for (const books of [[book()], [folderBook(), book('two')], [{ ...folderBook(), format: 'pdf' as const, filename: 'a.pdf' }], [folderBook('one', 'Already.kepub.epub')]]) {
+      await expect(replace(books)).rejects.toThrow('replaceUnavailable');
+    }
+    expect(convert).not.toHaveBeenCalled();
+    expect(native.replaceDocument).not.toHaveBeenCalled();
+  });
+
+  it('reports a failed book without undoing the books already replaced, and still clears the staged file', async () => {
+    vi.mocked(native.replaceDocument)
+      .mockImplementationOnce(async ({ name, size, sha256 }) => ({ uri: 'content://tree/doc/new', name, size, sha256, modified: '1', originalKept: false }))
+      .mockRejectedValueOnce(Object.assign(new Error('targetExists: b.kepub.epub'), { code: 'TARGET_EXISTS' }));
+    const { replaced, failures } = await replace([folderBook('one', 'a.epub'), folderBook('two', 'b.epub')]);
+    expect(replaced.map(item => item.id)).toEqual(['one']);
+    expect(failures.map(item => item.book.id)).toEqual(['two']);
+    expect(onReplaced).toHaveBeenCalledOnce();
+    expect(cache.size).toBe(0);
+  });
+
+  it('reports a library update failure against that book and carries on', async () => {
+    onReplaced.mockRejectedValueOnce(new Error('QuotaExceededError'));
+    const { replaced, failures } = await replace([folderBook('one', 'a.epub'), folderBook('two', 'b.epub')]);
+    expect(replaced.map(item => item.id)).toEqual(['one', 'two']);
+    expect(failures.map(item => item.book.id)).toEqual(['one']);
+    expect(onReplaced).toHaveBeenCalledTimes(2);
+  });
+
+  it('treats a receipt that does not match the staged KEPUB as a failure and does not touch the library', async () => {
+    vi.mocked(native.replaceDocument).mockImplementation(async ({ name, size }) => ({ uri: 'content://x', name, size, sha256: '0'.repeat(64), modified: '1', originalKept: false }));
+    const { replaced, failures } = await replace([folderBook()]);
+    expect(replaced).toEqual([]);
+    expect((failures[0].error as Error).message).toBe('outputInvalid');
+    expect(onReplaced).not.toHaveBeenCalled();
   });
 });

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, ArrowRight, ArrowUp, ArrowDown, BookOpen, Check, ChevronLeft, ChevronRight, FolderOpen, Layers, Save, Send, Trash2 } from 'lucide-react';
+import { ArrowDownToLine, ArrowRight, ArrowUp, ArrowDown, BookOpen, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Copy, FolderOpen, Layers, Replace, Save, Send, Trash2 } from 'lucide-react';
 import type { Book, ExportFormat, Metadata } from './types';
 import { applySharedDetails, draftOf, materialise, moveItem, type Draft, type SharedDetails } from './collection';
 import { useI18n } from './i18n';
@@ -8,6 +8,7 @@ import { coverMime, MAX_COVER_SIZE } from './cover';
 import { Modal } from './Modal';
 import { defaultOcrLanguages, ocrLanguageNames, PDF_OCR_LANGUAGES, type PdfOcrLanguage } from './pdf-ocr-options';
 import type { ExportOptions } from './export';
+import { canReplace, inPlaceName, isKepub } from './in-place';
 const ocrLanguageTags: Record<PdfOcrLanguage, string> = { eng: 'en', jpn: 'ja', chi_sim: 'zh-CN', chi_tra: 'zh-TW', kor: 'ko', tha: 'th', rus: 'ru', por: 'pt', spa: 'es' };
 
 interface Props {
@@ -16,9 +17,13 @@ interface Props {
   onClose: () => void;
   onSave: (books: Book[]) => Promise<boolean>;
   onExport: (books: Book[], format: ExportFormat, send?: boolean, options?: ExportOptions) => void;
+  /** Convert EPUBs to KEPUB in their folders, deleting each original once its KEPUB is verified. */
+  onReplace: (books: Book[]) => void;
+  /** URIs of the connected folders; a book from any other folder cannot be replaced. */
+  folders: string[];
   onRemove: (book: Book) => void;
 }
-export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRemove }: Props) {
+export function CollectionEditor({ books, busy, onClose, onSave, onExport, onReplace, folders, onRemove }: Props) {
   const { t, locale } = useI18n();
   const [drafts, setDrafts] = useState<Draft[]>(() => books.map(draftOf));
   const [baseline, setBaseline] = useState(() => new Map(books.map(book => [book.id, JSON.stringify(book)])));
@@ -29,6 +34,7 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
   const [error, setError] = useState('');
   const [pdfFormat, setPdfFormat] = useState<ExportFormat>('kepub');
   const [ocrChoices, setOcrChoices] = useState<Record<string, PdfOcrLanguage[]>>({});
+  const [saveMenu, setSaveMenu] = useState(false), [confirmReplace, setConfirmReplace] = useState(false);
   const coverInput = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const index = drafts.findIndex(draft => draft.book.id === activeId);
@@ -38,6 +44,10 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
   const dirty = dirtyIds.size > 0;
   const valid = drafts.every(draft => draft.book.title.trim());
   const pdf = book.format === 'pdf';
+  const replaceable = drafts.every(draft => canReplace(draft.book) && folders.includes(draft.book.sourceFolder!));
+  const fromFolders = drafts.every(draft => draft.book.format === 'epub' && draft.book.sourceUri && draft.book.sourceFolder);
+  const replaceBlocker = !fromFolders ? 'replaceUnavailable' : drafts.some(draft => isKepub(draft.book)) ? 'replaceKepub'
+    : drafts.some(draft => !folders.includes(draft.book.sourceFolder!)) ? 'replaceFolderGone' : 'replaceUnavailable';
   const recognitionLanguages = (source: Book) => ocrChoices[source.id] ?? defaultOcrLanguages(source);
   const ocrLanguages = recognitionLanguages(book);
   const pdfBooks = drafts.map(draft => draft.book).filter(source => source.format === 'pdf');
@@ -124,7 +134,14 @@ export function CollectionEditor({ books, busy, onClose, onSave, onExport, onRem
               {pdf && <><label className="field">{t('outputFormat')}<select aria-label={t('outputFormat')} value={pdfFormat} disabled={busy} onChange={event => setPdfFormat(event.target.value as ExportFormat)}><option value="kepub">KEPUB</option><option value="epub">EPUB</option><option value="original">{t(book.customCover ? 'pdfWithCover' : 'originalPdf')}</option></select></label>{pdfFormat !== 'original' ? <><p className="info-note">{t('pdfConversionHint')}</p><details className="ocr-options"><summary>{t('ocrOptions')}</summary><p className="hint">{t('ocrHint')}</p><fieldset className="ocr-languages" aria-label={t('ocrOptions')} disabled={busy}>{PDF_OCR_LANGUAGES.map(language => <label key={language} lang={ocrLanguageTags[language]}><input type="checkbox" checked={ocrLanguages.includes(language)} disabled={busy} onChange={event => chooseOcrLanguage(language, event.target.checked)}/>{ocrLanguageNames[language]}</label>)}</fieldset></details></> : book.customCover && <p className="info-note">{t('pdfCoverHint')}</p>}</>}
               {!ocrReady && <p className="field-error" role="alert">{t('ocrLanguageRequired')}</p>}
               <button className="source-choice" disabled={busy || dirty || !valid || !ocrReady} onClick={() => exportBooks(pdf ? pdfFormat : 'kepub', true)}><Send size={23}/><span><strong>{t(!pdf || pdfFormat === 'kepub' ? 'convertSend' : pdfFormat === 'epub' ? 'convertEpubSend' : 'sendKobo')}</strong><small>{t(!isNative ? 'androidOnly' : pdf ? 'readyKobo' : 'convertSendHint')}</small></span><ArrowRight size={17}/></button>
-              {!pdf && <button className="source-choice" disabled={busy || dirty || !valid || !ocrReadyFor('kepub')} onClick={() => exportBooks('kepub')}><ArrowDownToLine size={23}/><span><strong>{t(collection ? 'convertZip' : 'convertSave')}</strong><small>{t('readyKobo')}</small></span><ArrowRight size={17}/></button>}
+              {!pdf && <>
+                <button className="source-choice" aria-expanded={saveMenu} disabled={busy || dirty || !valid} onClick={() => { setSaveMenu(!saveMenu); setConfirmReplace(false); }}><ArrowDownToLine size={23}/><span><strong>{t('convertSave')}</strong><small>{t('readyKobo')}</small></span>{saveMenu ? <ChevronUp size={17}/> : <ChevronDown size={17}/>}</button>
+                {saveMenu && <div className="save-choices">
+                  <button className="source-choice" disabled={busy || dirty || !valid || !ocrReadyFor('kepub')} onClick={() => exportBooks('kepub')}><Copy size={20}/><span><strong>{t('saveCopy')}</strong><small>{t(collection ? 'saveCopyZipHint' : 'saveCopyHint')}</small></span><ArrowRight size={17}/></button>
+                  {isNative && <button className="source-choice" disabled={busy || dirty || !valid || !replaceable} onClick={() => setConfirmReplace(true)}><Replace size={20}/><span><strong>{t(collection ? 'replaceOriginals' : 'replaceOriginal')}</strong><small>{!replaceable ? t(replaceBlocker) : collection ? t('replaceManyHint') : t('replaceHint', { from: book.filename, to: inPlaceName(book) })}</small></span><ArrowRight size={17}/></button>}
+                  {confirmReplace && replaceable && <div className="delete-confirm" role="alert"><p>{collection ? t('replaceConfirmMany', { count: drafts.length }) : t('replaceConfirm', { name: book.filename })}</p><div className="button-row"><button className="secondary" onClick={() => setConfirmReplace(false)}>{t('cancel')}</button><button className="primary danger-bg" disabled={busy || dirty} onClick={() => { setConfirmReplace(false); onReplace(drafts.map(materialise)); }}>{t('replaceAction')}</button></div></div>}
+                </div>}
+              </>}
               <button className="source-choice" disabled={busy || dirty || !valid || !ocrReadyFor(pdf ? pdfFormat : 'original')} onClick={() => exportBooks(pdf ? pdfFormat : 'original')}><FolderOpen size={23}/><span><strong>{t(pdf ? pdfFormat === 'original' ? book.customCover ? 'exportPdfCover' : 'exportPdf' : pdfFormat === 'epub' ? 'convertEpubSave' : 'convertSave' : collection ? 'exportZip' : /\.kepub\.epub$/i.test(book.filename) ? 'exportKepub' : 'exportEpub')}</strong><small>{t('originalsPreserved')}</small></span><ArrowRight size={17}/></button>
               {book.customCover && <p className="hint">{t('koboCoverHint')}</p>}
             </div>}

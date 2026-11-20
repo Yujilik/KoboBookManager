@@ -27,6 +27,20 @@ describe('application languages', () => {
     expect(translatedError(new Error('Este EPUB tem conteúdo protegido por DRM'), translator('en-GB'))).toContain('DRM-protected');
     expect(translatedError(new Error('Seleção de pasta cancelada.'), translator('ja'))).toBe(translator('ja')('cancelled'));
   });
+  it('localises in-place replacement failures from Android and iOS', () => {
+    for (const locale of locales) {
+      const t = translator(locale);
+      expect(translatedError({ message: 'folderReadOnly: write denied', code: 'FOLDER_READ_ONLY' }, t)).toBe(t('folderReadOnly'));
+      expect(translatedError({ code: 'FOLDER_READ_ONLY' }, t)).toBe(t('folderReadOnly'));
+      expect(translatedError({ message: 'originalMissing: gone', code: 'ORIGINAL_MISSING' }, t)).toBe(t('originalMissing'));
+      expect(translatedError(new Error('replaceUnavailable'), t)).toBe(t('replaceUnavailable'));
+      expect(translatedError({ message: 'Folder access expired', code: 'FOLDER_FAILED' }, t)).toBe(t('folderFailed'));
+      expect(translatedError({ message: 'originalChanged: hash differs', code: 'ORIGINAL_CHANGED' }, t)).toBe(t('originalChanged'));
+      expect(translatedError({ message: 'targetExists: Book.kepub.epub', code: 'TARGET_EXISTS' }, t)).toBe(t('targetExists'));
+      // A generic failure naming an .epub file must not be mistaken for an invalid book.
+      expect(translatedError({ message: 'Não foi possível salvar o arquivo no destino escolhido: Book.epub', code: 'SAVE_FAILED' }, t)).toBe(t('saveFailed'));
+    }
+  });
   it('localises export verification failures from JavaScript and native Android', () => {
     for (const locale of locales) {
       const t = translator(locale);

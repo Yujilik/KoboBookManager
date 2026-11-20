@@ -68,6 +68,15 @@ public final class ExportPayload {
         if (!hex(digest.digest()).equals(expectedHash)) throw new IOException("Output checksum mismatch");
     }
 
+    /** Lower-case hex SHA-256 of a whole stream (the same form as a library book id). */
+    public static String sha256(InputStream input) throws IOException {
+        if (input == null) throw new IOException("Input cannot be read");
+        MessageDigest digest = digest();
+        byte[] buffer = new byte[32768]; int count;
+        while ((count = input.read(buffer)) != -1) if (count > 0) digest.update(buffer, 0, count);
+        return hex(digest.digest());
+    }
+
     /** Caller must close the destination before reporting success, then read it back. */
     public static void copy(InputStream input, OutputStream output, long expectedSize, String expectedHash) throws IOException {
         if (input == null || output == null) throw new IOException("Output destination is unavailable");

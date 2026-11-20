@@ -6,11 +6,15 @@ export interface OutputReceipt { size: number; sha256: string }
 export interface StagedFile extends OutputReceipt { path: string; name: string; mime: string }
 export interface DeliveryFile extends OutputReceipt { name: string; mime: string }
 export interface Delivery { urls: string[]; code: string; port: number; files: DeliveryFile[] }
+/** A converted file written next to its folder original, which is then deleted (unless `originalKept`). */
+export interface ReplacedFile extends OutputReceipt { uri: string; name: string; modified: string; originalKept: boolean }
 interface KoboNative {
   chooseFolder(): Promise<Folder>;
   scanFolder(options: { uri: string }): Promise<{ files: FolderFile[] }>;
   readDocument(options: { uri: string }): Promise<{ data: string }>;
   saveDocument(options: StagedFile): Promise<OutputReceipt & { uri: string }>;
+  /** `expectedSha256` identifies the original as imported; native code refuses to touch it if it changed. */
+  replaceDocument(options: StagedFile & { uri: string; folder: string; expectedSha256: string }): Promise<ReplacedFile>;
   startDelivery(options: { files: (StagedFile & { title: string })[]; locale: string; labels: Record<string, string> }): Promise<Delivery>;
   stopDelivery(): Promise<void>;
   setProcessing(options: { active: boolean }): Promise<void>;

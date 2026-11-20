@@ -318,6 +318,106 @@ test("FolderAccess rejects folders nested deeper than Android's limit") {
     check(throwsError { _ = try access.scan(try access.register(root).uri) }, "too deep")
 }
 
+// MARK: - FolderAccess.replace (convert and replace the original)
+struct ReplaceFixture {
+    let access: FolderAccess, folder: String, nested: URL, original: URL, staged: URL, kepub: [UInt8], imported: String, done: () -> Void
+    func source() throws -> FolderAccess.File { try access.scan(folder).first { $0.name == original.lastPathComponent }! }
+    func replace(_ uri: String, expected: String? = nil, sha: String? = nil) throws -> FolderAccess.Replaced {
+        try access.replace(uri, with: staged, expectedSHA256: expected ?? imported, size: Int64(kepub.count), sha256: sha ?? hash(kepub))
+    }
+    func names() throws -> [String] { try access.scan(folder).map(\.name).sorted() }
+}
+func replaceFixture(_ name: String = "Ünï book.epub") throws -> ReplaceFixture {
+    let suite = "kobo-tests-\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
+    let access = FolderAccess(defaults: defaults), root = temp().appendingPathComponent("Library Books")
+    let nested = root.appendingPathComponent("Série #1")
+    try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+    let original = nested.appendingPathComponent(name), bytes = epub()
+    try Data(bytes).write(to: original)
+    let folder = try access.register(root)
+    let staged = temp().appendingPathComponent("payload"), kepub = epub(deflated: false)
+    try Data(kepub).write(to: staged)
+    return ReplaceFixture(access: access, folder: folder.uri, nested: nested, original: original, staged: staged, kepub: kepub, imported: hash(bytes),
+                          done: { defaults.removePersistentDomain(forName: suite) })
+}
+func errorText(_ body: () throws -> Void) -> String { do { try body(); return "no error" } catch { return "\(error)" } }
+
+test("FolderAccess.kepubName follows the original file name") {
+    check(FolderAccess.kepubName(for: "Book.epub") == "Book.kepub.epub", "epub")
+    check(FolderAccess.kepubName(for: "Book.EPUB") == "Book.kepub.epub", "upper-case extension")
+    check(FolderAccess.kepubName(for: "noext") == "noext.kepub.epub", "no extension")
+    check(FolderAccess.kepubName(for: "İSTANBUL.EPUB") == "İSTANBUL.kepub.epub", "length-changing lower case")
+    check(FolderAccess.kepubName(for: "a.kepub.EPUB") == nil && FolderAccess.kepubName(for: "a.kepub.epub") == nil, "already KEPUB")
+}
+test("FolderAccess.replace writes the KEPUB next to the EPUB, verifies it, then deletes the EPUB") {
+    let f = try replaceFixture(); defer { f.done() }
+    let result = try f.replace(try f.source().uri)
+    check(!result.originalKept, "original deleted")
+    check(!FileManager.default.fileExists(atPath: f.original.path), "epub gone")
+    check([UInt8](try Data(contentsOf: f.nested.appendingPathComponent("Ünï book.kepub.epub"))) == f.kepub, "kepub bytes")
+    check(result.file.name == "Ünï book.kepub.epub" && result.file.size == Int64(f.kepub.count), "receipt")
+    check(Int64(result.file.modified)! > 1_600_000_000_000, "modified ms")
+    let rescanned = try f.access.scan(f.folder)
+    check(rescanned.map(\.name) == ["Ünï book.kepub.epub"], "folder now holds only the KEPUB: \(rescanned.map(\.name))")
+    check(rescanned.first?.uri == result.file.uri, "returned URI matches what a refresh finds")
+    check(try f.access.read(result.file.uri) == Data(f.kepub), "readable through returned URI")
+}
+test("FolderAccess.replace accepts names with ':' and other punctuation") {
+    let f = try replaceFixture("Vol: 1 — «Été»!.epub"); defer { f.done() }
+    _ = try f.replace(try f.source().uri)
+    check(try f.names() == ["Vol: 1 — «Été»!.kepub.epub"], "replaced: \(try f.names())")
+}
+test("FolderAccess.replace refuses a KEPUB original and changes nothing") {
+    let f = try replaceFixture("Already.kepub.epub"); defer { f.done() }
+    check(errorText { _ = try f.replace(try f.source().uri) }.contains("Already a KEPUB"), "kepub refused")
+    check([UInt8](try Data(contentsOf: f.original)) == epub(), "untouched")
+}
+test("FolderAccess.replace never overwrites an existing file, folder or case-variant of the KEPUB name") {
+    let f = try replaceFixture(); defer { f.done() }
+    let uri = try f.source().uri, existing = f.nested.appendingPathComponent("Ünï book.kepub.epub")
+    try Data("other".utf8).write(to: existing)
+    check(errorText { _ = try f.replace(uri) }.hasPrefix("targetExists"), "existing file")
+    check(try Data(contentsOf: existing) == Data("other".utf8), "existing KEPUB untouched")
+    try FileManager.default.removeItem(at: existing)
+    try FileManager.default.createDirectory(at: existing.appendingPathComponent("inside"), withIntermediateDirectories: true)
+    check(errorText { _ = try f.replace(uri) }.hasPrefix("targetExists"), "existing folder")
+    check(FileManager.default.fileExists(atPath: existing.appendingPathComponent("inside").path), "folder untouched")
+    try FileManager.default.removeItem(at: existing)
+    let caseInsensitive = (try f.nested.resourceValues(forKeys: [.volumeSupportsCaseSensitiveNamesKey])).volumeSupportsCaseSensitiveNames == false
+    if caseInsensitive {
+        let variant = f.nested.appendingPathComponent("ünï BOOK.KEPUB.epub")
+        try Data("variant".utf8).write(to: variant)
+        check(errorText { _ = try f.replace(uri) }.hasPrefix("targetExists"), "case-only variant")
+        check(try Data(contentsOf: variant) == Data("variant".utf8), "variant untouched")
+        try FileManager.default.removeItem(at: variant)
+    }
+    check([UInt8](try Data(contentsOf: f.original)) == epub(), "original untouched throughout")
+    _ = try f.replace(uri)
+    check(try f.names() == ["Ünï book.kepub.epub"], "works once the name is free")
+}
+test("FolderAccess.replace leaves an original that changed since import alone") {
+    let f = try replaceFixture(); defer { f.done() }
+    let uri = try f.source().uri
+    try Data(epub() + [0]).write(to: f.original)
+    check(errorText { _ = try f.replace(uri) }.hasPrefix("originalChanged"), "changed on disk")
+    check(errorText { _ = try f.replace(uri, expected: String(repeating: "a", count: 64)) }.hasPrefix("originalChanged"), "different identity")
+    check(try f.names() == ["Ünï book.epub"], "nothing written: \(try f.names())")
+}
+test("FolderAccess.replace keeps the original when anything goes wrong") {
+    let f = try replaceFixture(); defer { f.done() }
+    let uri = try f.source().uri
+    check(errorText { _ = try f.replace(uri, sha: String(repeating: "0", count: 64)) } != "no error", "checksum mismatch")
+    check(try f.names() == ["Ünï book.epub"], "no partial KEPUB after failed check")
+    try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: f.nested.path)
+    let readOnly = errorText { _ = try f.replace(uri) }
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: f.nested.path)
+    check(readOnly.hasPrefix("folderReadOnly"), "read-only reported as folderReadOnly: \(readOnly)")
+    check([UInt8](try Data(contentsOf: f.original)) == epub(), "original intact")
+    try FileManager.default.removeItem(at: f.original)
+    check(errorText { _ = try f.replace(uri) }.hasPrefix("originalMissing"), "missing original")
+    check(try f.names() == [], "nothing written for a missing original")
+}
+
 try? FileManager.default.removeItem(at: FileManager.default.temporaryDirectory.appendingPathComponent("kobo-native-tests"))
 print("\n\(passed) passed, \(failures) failed")
 exit(failures == 0 ? 0 : 1)

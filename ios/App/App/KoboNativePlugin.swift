@@ -13,6 +13,7 @@ public class KoboNativePlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDele
         CAPPluginMethod(name: "scanFolder", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "readDocument", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "saveDocument", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "replaceDocument", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "startDelivery", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "stopDelivery", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setProcessing", returnType: CAPPluginReturnPromise),
@@ -152,6 +153,29 @@ public class KoboNativePlugin: CAPPlugin, CAPBridgedPlugin, UIDocumentPickerDele
                 try? FileManager.default.removeItem(at: destination)
                 if scoped { destination.stopAccessingSecurityScopedResource() }
                 pending.call.reject("Não foi possível salvar o arquivo no destino escolhido: " + error.localizedDescription, nil, error)
+            }
+        }
+    }
+
+    /// Convert-and-replace: write the staged output next to a folder book, then delete the original.
+    @objc func replaceDocument(_ call: CAPPluginCall) {
+        work.async {
+            let checked: ExportPayload.Checked
+            do { checked = try self.checkedOutput(call) }
+            catch { call.reject("outputInvalid: " + error.localizedDescription, "OUTPUT_INVALID", error); return }
+            do {
+                guard let uri = call.getString("uri") else { throw KoboError("originalMissing: missing file") }
+                guard let expected = call.getString("expectedSha256"), expected.range(of: "^[0-9a-f]{64}$", options: .regularExpression) != nil
+                else { throw KoboError("originalChanged: no identity for the original") }
+                let result = try self.folders.replace(uri, with: checked.file, expectedSHA256: expected, size: checked.size, sha256: checked.sha256)
+                call.resolve(["uri": result.file.uri, "name": result.file.name, "size": checked.size, "sha256": checked.sha256,
+                              "modified": result.file.modified, "originalKept": result.originalKept])
+            } catch {
+                let message = error.localizedDescription
+                let codes = ["folderReadOnly": "FOLDER_READ_ONLY", "originalMissing": "ORIGINAL_MISSING", "originalChanged": "ORIGINAL_CHANGED", "targetExists": "TARGET_EXISTS",
+                             "Folder access expired": "FOLDER_FAILED"]
+                if let code = codes.first(where: { message.hasPrefix($0.key) })?.value { call.reject(message, code, error) }
+                else { call.reject("Não foi possível salvar o arquivo no destino escolhido: " + message, "SAVE_FAILED", error) }
             }
         }
     }

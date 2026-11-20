@@ -6,7 +6,7 @@ import { MAX_BOOK_SIZE } from './epub';
 import { bookFormat, readBook } from './book-import';
 import * as store from './library';
 import { dataURL, fromBase64, isNative, native, type Delivery, type Folder } from './native';
-import { exportCollection, saveFile, type ExportOptions } from './export';
+import { exportCollection, replaceOriginals, saveFile, type ExportOptions } from './export';
 import { CollectionEditor } from './CollectionEditor';
 import { I18nProvider, translatedError, useI18n } from './i18n';
 import { locales, localeNames, type Locale } from './messages';
@@ -56,13 +56,24 @@ function App() {
     try { await action(); return true; } catch (error) { notify(translatedError(error, t), true); return false; }
     finally { operationLock.current = false; setBusy(''); }
   };
-  async function importBytes(name: string, bytes: Uint8Array, source?: { uri: string; modified?: string; folder?: string }) {
+  async function importBytes(name: string, bytes: Uint8Array, source?: { uri: string; modified?: string; folder?: string }, seen?: Set<string>) {
     if (bytes.length > MAX_BOOK_SIZE) throw new Error('fileTooLarge');
     const hash = await crypto.subtle.digest('SHA-256', bytes.slice().buffer);
     const id = Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, '0')).join('');
     const existing = (await store.listBooks()).find(book => book.id === id);
     if (existing) {
-      if (source && !existing.sourceUri) await store.saveBook({ ...existing, sourceUri: source.uri, sourceModified: source.modified, sourceFolder: source.folder });
+      // Follow the folder file so the name shown and the file "Replace the original" acts on are the same,
+      // but move an entry to another file only when its own file is really gone (renamed or moved within
+      // this folder, or its folder is no longer connected), never between identical copies.
+      if (source) {
+        const connected = new Set(((await store.setting<Folder[]>('sources')) ?? []).map(folder => folder.uri));
+        const gone = !existing.sourceUri || !existing.sourceFolder || !connected.has(existing.sourceFolder)
+          || (existing.sourceFolder === source.folder && !!seen && !seen.has(existing.sourceUri));
+        const changed = existing.sourceUri === source.uri
+          ? existing.sourceModified !== source.modified || existing.filename !== name
+          : gone;
+        if (changed) await store.saveBook({ ...existing, filename: name, sourceUri: source.uri, sourceModified: source.modified, sourceFolder: source.folder });
+      }
       return { id, added: false, format: existing.format };
     }
     const result = await readBook(name, bytes);
@@ -101,12 +112,13 @@ function App() {
     let count = 0, existing = 0; const failures: string[] = [];
     const current = await store.listBooks();
     const { files: list } = await native.scanFolder({ uri: source.uri });
+    const seen = new Set(list.map(file => file.uri));
     for (let index = 0; index < list.length; index++) {
       const file = list[index]; setBusy(t('reading', { index: index + 1, count: list.length, name: file.name }));
       if (current.some(book => book.sourceUri === file.uri && book.sourceModified === file.modified && file.modified && file.modified !== '0')) { existing++; continue; }
       try {
         if (file.size > MAX_BOOK_SIZE) throw new Error('fileTooLarge');
-        const result = await importBytes(file.name, fromBase64((await native.readDocument({ uri: file.uri })).data), { uri: file.uri, modified: file.modified, folder: source.uri });
+        const result = await importBytes(file.name, fromBase64((await native.readDocument({ uri: file.uri })).data), { uri: file.uri, modified: file.modified, folder: source.uri }, seen);
         if (result.added) count++; else existing++;
       } catch (error) { failures.push(file.name + ': ' + translatedError(error, t)); }
     }
@@ -133,6 +145,31 @@ function App() {
       const result = await exportCollection(next, format, send, locale, t, setBusy, options);
       if (result) setDelivery(result); else notify(t('filesReady'));
     } finally { if (keepAwake) await native.setProcessing({ active: false }); }
+  });
+  const replaceBooks = (next: Book[]) => void run(t('preparing'), async () => {
+    const kept: string[] = [];
+    await native.setProcessing({ active: true });
+    let outcome: Awaited<ReturnType<typeof replaceOriginals>>;
+    try {
+      outcome = await replaceOriginals(next, t, setBusy, async ({ book, bytes, file }) => {
+        // Runs right after each file is replaced: the KEPUB now stands where the EPUB was, so a
+        // folder refresh recognises it instead of importing a duplicate.
+        const result = await importBytes(file.name, bytes, { uri: file.uri, modified: file.modified, folder: book.sourceFolder });
+        const entry = (await store.listBooks()).find(item => item.id === result.id);
+        if (entry) await store.saveBook({ ...entry, filename: file.name, sourceUri: file.uri, sourceModified: file.modified, sourceFolder: book.sourceFolder, added: book.added });
+        if (file.originalKept) kept.push(book.filename);
+        else if (result.id !== book.id) await store.removeBook(book.id);
+      });
+    } finally { await native.setProcessing({ active: false }); }
+    const { replaced, failures } = outcome;
+    await refresh();
+    if (replaced.length) {
+      const done = new Set(replaced.map(book => book.id));
+      setEditingIds(undefined); setSelected(current => current.filter(id => !done.has(id)));
+    }
+    const details = failures.map(({ book, error }) => book.title + ': ' + translatedError(error, t));
+    notify([replaced.length ? t('replaced', { count: replaced.length }) : '', kept.length ? t('replacedKept', { names: kept.join(', ') }) : '',
+      details.length ? t('failures', { details: details.join('; ') }) : ''].filter(Boolean).join(' '), failures.length > 0 || kept.length > 0);
   });
   const normalise = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase(locale);
   const filtered = books.filter(book => normalise([book.title, ...book.authors, ...book.tags, book.series, book.publisher].join(' ')).includes(normalise(search)) && (filter === 'all' || filter === book.format || filter === 'series' && !!book.series))
@@ -186,7 +223,7 @@ function App() {
       <div className="settings-section"><h3>{t('howItWorks')}</h3><ol><li>{t('sendHelp1')}</li><li>{t('sendHelp2')}</li><li>{t('sendHelp3')}</li></ol><p className="hint">{t('networkHint')}</p></div>
       <div className="settings-section"><h3>{t('folders')}</h3>{sources.map(source => <div className="source-setting" key={source.uri}><span><FolderOpen size={17}/>{source.name}</span><button className="text-button" disabled={!!busy} onClick={() => void run(t('disconnecting'), async () => { const next = sources.filter(item => item.uri !== source.uri); await store.setSetting('sources', next); setSources(next); notify(t('disconnected')); })}>{t('disconnect')}</button></div>)}<button className="secondary" disabled={!!busy} onClick={() => { setSettings(false); setSourcePicker(true); }}><Plus size={17}/>{t('addFolder')}</button></div><p className="hint">{t('browserHint')}</p><p className="hint">{t('independent')}</p><p className="hint">© 2026 yujilik · v{APP_VERSION}</p>
     </Modal>}
-    {!!editingBooks?.length && <CollectionEditor books={editingBooks} busy={!!busy} onClose={() => setEditingIds(undefined)} onSave={saveEdits} onExport={exportBooks} onRemove={book => void run(t('removing'), async () => { await store.removeBook(book.id); await refresh(); setSelected(current => current.filter(id => id !== book.id)); setEditingIds(undefined); notify(t('removed')); })}/>}
+    {!!editingBooks?.length && <CollectionEditor books={editingBooks} busy={!!busy} onClose={() => setEditingIds(undefined)} onSave={saveEdits} onExport={exportBooks} onReplace={replaceBooks} folders={sources.map(source => source.uri)} onRemove={book => void run(t('removing'), async () => { await store.removeBook(book.id); await refresh(); setSelected(current => current.filter(id => id !== book.id)); setEditingIds(undefined); notify(t('removed')); })}/>}
     {delivery && <Modal title={t('readyKobo')} onClose={() => { void native.stopDelivery(); setDelivery(undefined); }}><div className="delivery-icon"><Smartphone size={38}/><ArrowRight size={23}/><BookOpen size={38}/></div><ul className="delivery-files">{delivery.files.map(file => <li key={file.name}><strong>{file.name}</strong><span>{new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(file.size / (file.size < 1024 * 1024 ? 1024 : 1024 * 1024))} {file.size < 1024 * 1024 ? 'KB' : 'MB'}</span></li>)}</ul><p>{t('addressHint')}</p>{delivery.urls.map(url => <code className="delivery-url" key={url}>{url}</code>)}<p>{t('codeHint')}</p><div className="delivery-code">{delivery.code}</div><p className="hint">{t('deliveryHint')}</p><button className="secondary full" onClick={() => { void native.stopDelivery(); setDelivery(undefined); }}>{t('stopDelivery')}</button></Modal>}
   </div>;
 }
